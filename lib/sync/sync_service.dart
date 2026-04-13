@@ -3,6 +3,7 @@ import 'dart:developer' as dev;
 
 import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:dio/dio.dart';
+import 'package:flutter/foundation.dart' show kReleaseMode;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 
@@ -62,8 +63,12 @@ class SyncService {
       }
     });
 
-    // Periodic auto-sync: when online, try pushing queued mutations every 5 mins.
-    _autoSyncTimer = Timer.periodic(const Duration(minutes: 5), (_) {
+    // Periodic auto-sync:
+    // - debug/profile: every 10s (testing)
+    // - release: every 5 mins
+    final interval =
+        kReleaseMode ? const Duration(minutes: 5) : const Duration(seconds: 10);
+    _autoSyncTimer = Timer.periodic(interval, (_) {
       if (_pending <= 0) return;
       unawaited(syncOnce(trigger: SyncTrigger.autoTimer));
     });

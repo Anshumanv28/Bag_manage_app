@@ -9,6 +9,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:uuid/uuid.dart';
 
 import '../../app/alerts.dart';
+import '../../app/theme.dart';
 import '../../data/local/app_db.dart';
 import '../auth/auth_controller.dart';
 import 'widgets/sop_progress_header.dart';
@@ -405,6 +406,24 @@ class _ScanScreenState extends ConsumerState<ScanScreen> {
       child: Stack(
         children: [
           Positioned.fill(child: CameraPreview(camera)),
+          Positioned.fill(
+            child: IgnorePointer(
+              child: DecoratedBox(
+                decoration: BoxDecoration(
+                  gradient: LinearGradient(
+                    begin: Alignment.topCenter,
+                    end: Alignment.bottomCenter,
+                    colors: [
+                      Colors.black.withValues(alpha: 0.30),
+                      Colors.transparent,
+                      Colors.black.withValues(alpha: 0.35),
+                    ],
+                    stops: const [0, 0.45, 1],
+                  ),
+                ),
+              ),
+            ),
+          ),
           // Mode selection happens on the previous screen (ModeSelectScreen).
           Positioned(
             left: 8,
@@ -428,40 +447,10 @@ class _ScanScreenState extends ConsumerState<ScanScreen> {
               left: 8,
               right: 8,
               top: 184,
-              child: Material(
-                elevation: 2,
-                borderRadius: BorderRadius.circular(12),
-                color: Theme.of(context).colorScheme.surfaceContainerHighest,
-                child: Padding(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 16,
-                    vertical: 12,
-                  ),
-                  child: Row(
-                    children: [
-                      Icon(
-                        Icons.badge_outlined,
-                        color: Theme.of(context).colorScheme.primary,
-                      ),
-                      const SizedBox(width: 12),
-                      Expanded(
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Text(
-                              'Candidate ID scanned',
-                              style: Theme.of(context).textTheme.labelMedium,
-                            ),
-                            Text(
-                              _depositRoll!,
-                              style: Theme.of(context).textTheme.titleLarge,
-                            ),
-                          ],
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
+              child: _ScanPill(
+                icon: Icons.badge_outlined,
+                title: 'Candidate ID scanned',
+                value: _depositRoll!,
               ),
             ),
           if (_operation == SopOperation.deposit &&
@@ -471,29 +460,17 @@ class _ScanScreenState extends ConsumerState<ScanScreen> {
               left: 16,
               right: 16,
               bottom: 96,
-              child: Card(
-                child: Padding(
-                  padding: const EdgeInsets.all(12),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.stretch,
-                    children: [
-                      Text(
-                        'Roll number scanned',
-                        style: Theme.of(context).textTheme.titleMedium,
-                      ),
-                      const SizedBox(height: 8),
-                      Text(
-                        _depositRoll!,
-                        style: Theme.of(context).textTheme.titleLarge,
-                      ),
-                      const SizedBox(height: 12),
-                      FilledButton(
-                        onPressed: _onDepositRollOk,
-                        child: const Text('OK'),
-                      ),
-                    ],
-                  ),
-                ),
+              child: _ActionSheet(
+                title: 'Candidate ID',
+                subtitle: 'Confirm the roll number before scanning rack ID.',
+                lines: [
+                  _KeyValueLine(label: 'Roll', value: _depositRoll!),
+                ],
+                primaryLabel: 'OK',
+                primaryIcon: Icons.check,
+                onPrimary: _onDepositRollOk,
+                secondaryLabel: 'Rescan',
+                onSecondary: _cancelDepositSummary,
               ),
             ),
           if (_operation == SopOperation.deposit &&
@@ -504,36 +481,18 @@ class _ScanScreenState extends ConsumerState<ScanScreen> {
               left: 16,
               right: 16,
               bottom: 96,
-              child: Card(
-                child: Padding(
-                  padding: const EdgeInsets.all(12),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.stretch,
-                    children: [
-                      Text(
-                        'Confirm deposit',
-                        style: Theme.of(context).textTheme.titleMedium,
-                      ),
-                      const SizedBox(height: 8),
-                      Text('Roll: $_depositRoll'),
-                      Text('Rack: $_depositRack'),
-                      const SizedBox(height: 8),
-                      Text(
-                        'Place the bag in the rack, then confirm.',
-                        style: Theme.of(context).textTheme.bodySmall,
-                      ),
-                      const SizedBox(height: 12),
-                      FilledButton(
-                        onPressed: _confirmDeposit,
-                        child: const Text('CONFIRM DEPOSIT'),
-                      ),
-                      TextButton(
-                        onPressed: _cancelDepositSummary,
-                        child: const Text('Cancel'),
-                      ),
-                    ],
-                  ),
-                ),
+              child: _ActionSheet(
+                title: 'Confirm deposit',
+                subtitle: 'Place the bag in the rack, then confirm.',
+                lines: [
+                  _KeyValueLine(label: 'Roll', value: _depositRoll!),
+                  _KeyValueLine(label: 'Rack', value: _depositRack!),
+                ],
+                primaryLabel: 'Confirm deposit',
+                primaryIcon: Icons.check_circle_outline,
+                onPrimary: _confirmDeposit,
+                secondaryLabel: 'Cancel',
+                onSecondary: _cancelDepositSummary,
               ),
             ),
           if (_operation == SopOperation.retrieve &&
@@ -543,53 +502,232 @@ class _ScanScreenState extends ConsumerState<ScanScreen> {
               left: 16,
               right: 16,
               bottom: 96,
-              child: Card(
-                color: Theme.of(context).colorScheme.primaryContainer,
-                child: Padding(
-                  padding: const EdgeInsets.all(16),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.stretch,
-                    children: [
-                      Text(
-                        'Bag location',
-                        style: Theme.of(context).textTheme.titleMedium,
-                      ),
-                      const SizedBox(height: 12),
-                      Text(
-                        'Rack: ${_retrieveBooking!.rackId}',
-                        style: Theme.of(context).textTheme.headlineSmall,
-                      ),
-                      const SizedBox(height: 4),
-                      Text('Roll: ${_retrieveBooking!.candidateId}'),
-                      const SizedBox(height: 16),
-                      FilledButton(
-                        onPressed: _confirmReturn,
-                        child: const Text('CONFIRM RETURN'),
-                      ),
-                      TextButton(
-                        onPressed: _cancelRetrieve,
-                        child: const Text('Cancel'),
-                      ),
-                    ],
+              child: _ActionSheet(
+                tone: _ActionTone.attention,
+                title: 'Bag location',
+                subtitle: 'Go to the rack and locate the bag, then confirm return.',
+                lines: [
+                  _KeyValueLine(
+                    label: 'Rack',
+                    value: _retrieveBooking!.rackId,
+                    emphasize: true,
                   ),
-                ),
+                  _KeyValueLine(label: 'Roll', value: _retrieveBooking!.candidateId),
+                ],
+                primaryLabel: 'Confirm return',
+                primaryIcon: Icons.check_circle_outline,
+                onPrimary: _confirmReturn,
+                secondaryLabel: 'Cancel',
+                onSecondary: _cancelRetrieve,
               ),
             ),
           Positioned(
             left: 16,
             right: 16,
             bottom: 16,
-            child: Card(
-              child: Padding(
-                padding: const EdgeInsets.all(12),
-                child: Row(
-                  children: [
-                    const Icon(Icons.qr_code_scanner),
-                    const SizedBox(width: 8),
-                    Expanded(child: Text(_hintText())),
-                  ],
-                ),
+            child: _HintStrip(text: _hintText()),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _HintStrip extends StatelessWidget {
+  const _HintStrip({required this.text});
+  final String text;
+
+  @override
+  Widget build(BuildContext context) {
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+        child: Row(
+          children: [
+            Icon(Icons.qr_code_scanner, color: Theme.of(context).colorScheme.primary),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Text(
+                text,
+                style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                      fontWeight: FontWeight.w600,
+                    ),
               ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _ScanPill extends StatelessWidget {
+  const _ScanPill({required this.icon, required this.title, required this.value});
+  final IconData icon;
+  final String title;
+  final String value;
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    return Material(
+      elevation: 1.5,
+      borderRadius: BorderRadius.circular(16),
+      color: AppPalette.card,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+        child: Row(
+          children: [
+            CircleAvatar(
+              radius: 18,
+              backgroundColor: AppPalette.navSelectedPill,
+              foregroundColor: cs.primary,
+              child: Icon(icon, size: 20),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(title, style: Theme.of(context).textTheme.labelMedium),
+                  const SizedBox(height: 2),
+                  Text(
+                    value,
+                    style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                          fontWeight: FontWeight.w800,
+                        ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+enum _ActionTone { normal, attention }
+
+class _ActionSheet extends StatelessWidget {
+  const _ActionSheet({
+    this.tone = _ActionTone.normal,
+    required this.title,
+    required this.subtitle,
+    required this.lines,
+    required this.primaryLabel,
+    required this.primaryIcon,
+    required this.onPrimary,
+    required this.secondaryLabel,
+    required this.onSecondary,
+  });
+
+  final _ActionTone tone;
+  final String title;
+  final String subtitle;
+  final List<Widget> lines;
+  final String primaryLabel;
+  final IconData primaryIcon;
+  final VoidCallback onPrimary;
+  final String secondaryLabel;
+  final VoidCallback onSecondary;
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    final bg = switch (tone) {
+      _ActionTone.normal => AppPalette.card,
+      _ActionTone.attention => AppPalette.navSelectedPill,
+    };
+    final border = switch (tone) {
+      _ActionTone.normal => AppPalette.border,
+      _ActionTone.attention => cs.primary.withValues(alpha: 0.35),
+    };
+
+    return Card(
+      color: bg,
+      child: Container(
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(16),
+          border: Border.all(color: border),
+        ),
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Row(
+              children: [
+                Icon(
+                  tone == _ActionTone.attention ? Icons.location_on_outlined : Icons.task_alt,
+                  color: cs.primary,
+                ),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Text(
+                    title,
+                    style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                          fontWeight: FontWeight.w800,
+                        ),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 6),
+            Text(
+              subtitle,
+              style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                    color: AppPalette.textSecondary,
+                  ),
+            ),
+            const SizedBox(height: 14),
+            ...lines,
+            const SizedBox(height: 14),
+            FilledButton.icon(
+              onPressed: onPrimary,
+              icon: Icon(primaryIcon),
+              label: Text(primaryLabel.toUpperCase()),
+            ),
+            const SizedBox(height: 8),
+            OutlinedButton(
+              onPressed: onSecondary,
+              child: Text(secondaryLabel),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _KeyValueLine extends StatelessWidget {
+  const _KeyValueLine({required this.label, required this.value, this.emphasize = false});
+  final String label;
+  final String value;
+  final bool emphasize;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 10),
+      child: Row(
+        children: [
+          SizedBox(
+            width: 54,
+            child: Text(
+              label,
+              style: Theme.of(context).textTheme.labelMedium?.copyWith(
+                    color: AppPalette.textSecondary,
+                  ),
+            ),
+          ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Text(
+              value,
+              style: emphasize
+                  ? Theme.of(context).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w900)
+                  : Theme.of(context).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w800),
             ),
           ),
         ],

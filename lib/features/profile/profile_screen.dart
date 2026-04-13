@@ -66,16 +66,34 @@ class ProfileScreen extends ConsumerWidget {
               ),
             ),
             const Spacer(),
-            SizedBox(
-              height: 48,
-              child: OutlinedButton.icon(
-                onPressed: () async {
-                  await ref.read(authControllerProvider.notifier).logout();
-                  if (!context.mounted) return;
-                  Navigator.of(context).pop();
-                },
-                icon: const Icon(Icons.logout),
-                label: const Text('Logout'),
+            Padding(
+              padding: const EdgeInsets.only(bottom: 10),
+              child: Card(
+                child: Padding(
+                  padding: const EdgeInsets.all(12),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      Text(
+                        'Session',
+                        style: Theme.of(context).textTheme.labelLarge?.copyWith(
+                              color: AppPalette.textSecondary,
+                              fontWeight: FontWeight.w700,
+                            ),
+                      ),
+                      const SizedBox(height: 10),
+                      OutlinedButton.icon(
+                        onPressed: () async {
+                          await ref.read(authControllerProvider.notifier).logout();
+                          if (!context.mounted) return;
+                          Navigator.of(context).pop();
+                        },
+                        icon: const Icon(Icons.logout),
+                        label: const Text('Logout'),
+                      ),
+                    ],
+                  ),
+                ),
               ),
             ),
           ],
