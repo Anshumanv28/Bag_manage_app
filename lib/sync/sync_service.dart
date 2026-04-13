@@ -6,9 +6,11 @@ import 'package:dio/dio.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 
+import '../app/alerts.dart';
 import '../data/local/app_db.dart';
 import '../data/remote/sync_api.dart';
 import '../data/remote/tokens.dart';
+import '../features/notifications/notifications_controller.dart';
 import 'sync_state.dart';
 
 final syncServiceProvider = Provider<SyncService>((ref) {
@@ -17,6 +19,8 @@ final syncServiceProvider = Provider<SyncService>((ref) {
   ref.onDispose(service.dispose);
   return service;
 });
+
+enum SyncTrigger { manual, autoTimer, autoOnline }
 
 class SyncService {
   SyncService(this._ref);
@@ -29,6 +33,7 @@ class SyncService {
   bool _syncInFlight = false;
   bool _connected = true;
   int _pending = 0;
+  DateTime? _lastStartNoticeAt;
   StreamSubscription<int>? _pendingSub;
   StreamSubscription? _connectivitySub;
   Timer? _autoSyncTimer;
@@ -53,14 +58,14 @@ class SyncService {
       _connected = connected;
       if (becameOnline && _pending > 0) {
         // Kick a sync attempt as soon as we regain network.
-        unawaited(syncOnce());
+        unawaited(syncOnce(trigger: SyncTrigger.autoOnline));
       }
     });
 
     // Periodic auto-sync: when online, try pushing queued mutations every 5 mins.
     _autoSyncTimer = Timer.periodic(const Duration(minutes: 5), (_) {
       if (_pending <= 0) return;
-      unawaited(syncOnce());
+      unawaited(syncOnce(trigger: SyncTrigger.autoTimer));
     });
   }
 
@@ -72,7 +77,7 @@ class SyncService {
     return generated;
   }
 
-  Future<void> syncOnce() async {
+  Future<void> syncOnce({SyncTrigger trigger = SyncTrigger.autoTimer}) async {
     if (_syncInFlight) return;
 
     // Sync endpoints require auth. Avoid throwing/crashing when logged out.
@@ -88,21 +93,117 @@ class SyncService {
       return;
     }
 
+    // No-op quickly if nothing to push.
+    if (_pending <= 0) return;
+
     _syncInFlight = true;
+    final db = _ref.read(appDbProvider);
+    final pendingBefore = _pending;
+
+    _ref.read(syncStateProvider.notifier).setSyncing(true);
+    _maybeNotifySyncStarted(trigger: trigger, pending: pendingBefore);
     try {
-      await pushPending();
+      await _pushWithRetry(trigger: trigger);
       _ref.read(syncStateProvider.notifier).setError(null);
+
+      final pendingAfter = await db.countPendingPush();
+      final pushed = (pendingBefore - pendingAfter).clamp(0, pendingBefore);
+      if (pushed > 0) {
+        _ref.read(notificationsControllerProvider.notifier).add(
+              message: 'Sync completed. Uploaded $pushed record(s).',
+              level: AppAlertLevel.success,
+            );
+      }
     } on DioException catch (e) {
       final msg =
           '${e.type} ${e.response?.statusCode ?? '—'} ${e.message ?? ''}'.trim();
       _ref.read(syncStateProvider.notifier).setError(msg);
       dev.log('[SYNC] failed: $msg', name: 'sync');
+      _ref.read(notificationsControllerProvider.notifier).add(
+            message: 'Sync failed. $msg',
+            level: AppAlertLevel.error,
+          );
     } catch (e) {
       _ref.read(syncStateProvider.notifier).setError(e.toString());
       dev.log('[SYNC] failed: $e', name: 'sync');
+      _ref.read(notificationsControllerProvider.notifier).add(
+            message: 'Sync failed. $e',
+            level: AppAlertLevel.error,
+          );
     } finally {
       _syncInFlight = false;
+      _ref.read(syncStateProvider.notifier).setSyncing(false);
     }
+  }
+
+  Future<void> _pushWithRetry({required SyncTrigger trigger}) async {
+    // "Transactional" behavior here means:
+    // - only mark records pushed when backend confirms (already true)
+    // - if we fail due to transient network issues, retry shortly instead of waiting 5 mins
+    const maxAttempts = 3;
+    for (var attempt = 1; attempt <= maxAttempts; attempt++) {
+      try {
+        await pushPending();
+        return;
+      } on DioException catch (e) {
+        if (!_isTransientNetworkError(e) || attempt == maxAttempts) rethrow;
+
+        final delay = switch (attempt) {
+          1 => const Duration(seconds: 2),
+          2 => const Duration(seconds: 6),
+          _ => const Duration(seconds: 12),
+        };
+        dev.log(
+          '[SYNC] transient failure, retrying in ${delay.inSeconds}s (attempt $attempt/$maxAttempts)',
+          name: 'sync',
+        );
+        await Future<void>.delayed(delay);
+        if (!_connected) {
+          _ref.read(syncStateProvider.notifier).setError('offline');
+          throw DioException(
+            requestOptions: RequestOptions(path: '/sync/push'),
+            type: DioExceptionType.connectionError,
+            error: 'offline',
+          );
+        }
+      }
+    }
+  }
+
+  bool _isTransientNetworkError(DioException e) {
+    return switch (e.type) {
+      DioExceptionType.connectionTimeout => true,
+      DioExceptionType.sendTimeout => true,
+      DioExceptionType.receiveTimeout => true,
+      DioExceptionType.connectionError => true,
+      DioExceptionType.unknown => true,
+      DioExceptionType.badResponse =>
+        (e.response?.statusCode != null && (e.response!.statusCode! >= 500)),
+      _ => false,
+    };
+  }
+
+  void _maybeNotifySyncStarted({required SyncTrigger trigger, required int pending}) {
+    // Start notifications can be noisy for auto-sync, so we only emit it:
+    // - always for manual sync
+    // - for auto sync at most once per 10 minutes
+    final now = DateTime.now();
+    final isManual = trigger == SyncTrigger.manual;
+    final last = _lastStartNoticeAt;
+    final allow =
+        isManual || last == null || now.difference(last) >= const Duration(minutes: 10);
+    if (!allow) return;
+
+    _lastStartNoticeAt = now;
+    final prefix = switch (trigger) {
+      SyncTrigger.manual => 'Sync started',
+      SyncTrigger.autoTimer => 'Auto sync started',
+      SyncTrigger.autoOnline => 'Auto sync started (back online)',
+    };
+    _ref.read(notificationsControllerProvider.notifier).add(
+          message: '$prefix. Pending: $pending.',
+          level: AppAlertLevel.info,
+        );
   }
 
   /// Pushes locally-created/updated bookings to backend `/sync/push`.

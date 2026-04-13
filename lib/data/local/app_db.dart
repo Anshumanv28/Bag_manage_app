@@ -159,6 +159,17 @@ class AppDb extends _$AppDb {
     return q.watch().map((rows) => rows.length);
   }
 
+  Future<int> countPendingPush() async {
+    final q = select(bookings)
+      ..where(
+        (t) =>
+            t.pushedStart.equals(false) |
+            (t.status.equals('complete') & t.pushedFinish.equals(false)),
+      );
+    final rows = await q.get();
+    return rows.length;
+  }
+
   Future<List<Booking>> listBookingsNeedingPush({int limit = 200}) {
     final q = select(bookings)
       ..where(

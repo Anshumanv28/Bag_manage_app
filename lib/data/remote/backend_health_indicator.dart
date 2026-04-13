@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../app/theme.dart';
 import 'backend_health.dart';
 
 class BackendHealthIndicator extends ConsumerWidget {
@@ -10,7 +11,7 @@ class BackendHealthIndicator extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final health = ref.watch(backendHealthProvider);
 
-    final color = health.connected ? Colors.green : Colors.red;
+    final color = health.connected ? AppPalette.success : AppPalette.danger;
     final icon = health.connected ? Icons.cloud_done : Icons.cloud_off;
 
     final tooltip = [

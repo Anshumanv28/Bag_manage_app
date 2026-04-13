@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../data/local/app_db.dart';
+import '../../app/theme.dart';
 
 class BookingsDoneScreen extends ConsumerWidget {
   const BookingsDoneScreen({super.key});
@@ -72,7 +73,7 @@ class BookingsDoneScreen extends ConsumerWidget {
                   for (final b in bookings) ...[
                     Card(
                       child: ListTile(
-                        leading: const Icon(Icons.check_circle, color: Colors.green),
+                        leading: const Icon(Icons.check_circle, color: AppPalette.success),
                         title: Text('Roll: ${b.candidateId}'),
                         subtitle: Text(
                           'Rack: ${b.rackId} • Retrieved'

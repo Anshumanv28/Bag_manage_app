@@ -7,6 +7,7 @@ class SyncState {
     required this.lastPullAt,
     required this.lastPushAt,
     required this.lastError,
+    required this.syncing,
   });
 
   final String? cursor;
@@ -14,6 +15,7 @@ class SyncState {
   final DateTime? lastPullAt;
   final DateTime? lastPushAt;
   final String? lastError;
+  final bool syncing;
 
   SyncState copyWith({
     String? cursor,
@@ -21,6 +23,7 @@ class SyncState {
     DateTime? lastPullAt,
     DateTime? lastPushAt,
     String? lastError,
+    bool? syncing,
   }) {
     return SyncState(
       cursor: cursor ?? this.cursor,
@@ -28,6 +31,7 @@ class SyncState {
       lastPullAt: lastPullAt ?? this.lastPullAt,
       lastPushAt: lastPushAt ?? this.lastPushAt,
       lastError: lastError,
+      syncing: syncing ?? this.syncing,
     );
   }
 }
@@ -44,6 +48,7 @@ class SyncStateController extends Notifier<SyncState> {
       lastPullAt: null,
       lastPushAt: null,
       lastError: null,
+      syncing: false,
     );
   }
 
@@ -52,5 +57,6 @@ class SyncStateController extends Notifier<SyncState> {
   void markPull() => state = state.copyWith(lastPullAt: DateTime.now());
   void markPush() => state = state.copyWith(lastPushAt: DateTime.now());
   void setError(String? error) => state = state.copyWith(lastError: error);
+  void setSyncing(bool syncing) => state = state.copyWith(syncing: syncing);
 }
 

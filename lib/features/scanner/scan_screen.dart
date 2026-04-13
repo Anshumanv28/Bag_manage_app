@@ -298,19 +298,28 @@ class _ScanScreenState extends ConsumerState<ScanScreen> {
   }
 
   Future<void> _onBarcodeScanned(String trimmed) async {
+    // Only accept:
+    // - Candidate ID: exactly 10 digits
+    // - Rack ID: R + 3 digits (case-insensitive; normalized to uppercase)
+    final candidateId = _parseCandidateId(trimmed);
+    final rackId = _parseRackId(trimmed);
+
     if (_operation == SopOperation.deposit) {
       switch (_depositPhase) {
         case _DepositPhase.scanRoll:
-          await _onDepositRollScanned(trimmed);
+          if (candidateId == null) return;
+          await _onDepositRollScanned(candidateId);
         case _DepositPhase.rollAwaitingOk:
         case _DepositPhase.confirmDeposit:
           break;
         case _DepositPhase.scanRack:
-          await _onDepositRackScanned(trimmed);
+          if (rackId == null) return;
+          await _onDepositRackScanned(rackId);
       }
     } else {
       if (_retrievePhase == _RetrievePhase.scanRoll) {
-        await _onRetrieveRollScanned(trimmed);
+        if (candidateId == null) return;
+        await _onRetrieveRollScanned(candidateId);
       }
     }
   }
@@ -587,6 +596,18 @@ class _ScanScreenState extends ConsumerState<ScanScreen> {
       ),
     );
   }
+}
+
+String? _parseCandidateId(String raw) {
+  final s = raw.trim();
+  return RegExp(r'^\d{10}$').hasMatch(s) ? s : null;
+}
+
+String? _parseRackId(String raw) {
+  final s = raw.trim().toUpperCase();
+  final m = RegExp(r'^R(\d{3})$').firstMatch(s);
+  if (m == null) return null;
+  return 'R${m.group(1)}';
 }
 
 InputImage _toInputImage(CameraImage image, int rotationDegrees) {

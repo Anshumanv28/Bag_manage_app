@@ -97,7 +97,7 @@ class _SyncBannerState extends ConsumerState<SyncBanner> {
     stage.value = 'Uploading pending records…';
 
     try {
-      await ref.read(syncServiceProvider).syncOnce();
+      await ref.read(syncServiceProvider).syncOnce(trigger: SyncTrigger.manual);
     } finally {
       if (mounted) setState(() => _syncing = false);
       if (context.mounted) Navigator.of(context, rootNavigator: true).pop();
@@ -109,6 +109,7 @@ class _SyncBannerState extends ConsumerState<SyncBanner> {
   Widget build(BuildContext context) {
     final status = ref.watch(syncStateProvider);
     final pending = status.pendingMutations;
+    final syncing = status.syncing;
     final hasError = status.lastError != null && status.lastError!.isNotEmpty;
     final isOffline = (status.lastError ?? '').toLowerCase().contains('offline');
 
@@ -147,7 +148,15 @@ class _SyncBannerState extends ConsumerState<SyncBanner> {
                         pending > 0 ? 'Pending sync: $pending' : 'All synced',
                         style: Theme.of(context).textTheme.titleSmall,
                       ),
-                      if (hasError)
+                      if (syncing)
+                        Padding(
+                          padding: const EdgeInsets.only(top: 2),
+                          child: Text(
+                            'Syncing…',
+                            style: Theme.of(context).textTheme.bodySmall,
+                          ),
+                        )
+                      else if (hasError)
                         Padding(
                           padding: const EdgeInsets.only(top: 2),
                           child: Text(
@@ -169,15 +178,16 @@ class _SyncBannerState extends ConsumerState<SyncBanner> {
                 ),
                 const SizedBox(width: 10),
                 FilledButton.icon(
-                  onPressed: pending == 0 || _syncing ? null : () => _syncNow(context, pending),
-                  icon: _syncing
+                  onPressed:
+                      pending == 0 || _syncing || syncing ? null : () => _syncNow(context, pending),
+                  icon: (_syncing || syncing)
                       ? const SizedBox(
                           width: 18,
                           height: 18,
                           child: CircularProgressIndicator(strokeWidth: 2),
                         )
                       : const Icon(Icons.sync),
-                  label: Text(_syncing ? 'Syncing…' : 'Sync now'),
+                  label: Text((_syncing || syncing) ? 'Syncing…' : 'Sync now'),
                 ),
               ],
             ),

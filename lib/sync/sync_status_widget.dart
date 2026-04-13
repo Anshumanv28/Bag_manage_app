@@ -19,6 +19,7 @@ class SyncStatusWidget extends ConsumerWidget {
             Text('Push to DB', style: Theme.of(context).textTheme.titleMedium),
             const SizedBox(height: 8),
             Text('Pending: ${status.pendingMutations}'),
+            Text('Syncing: ${status.syncing ? 'yes' : 'no'}'),
             Text('Last push: ${status.lastPushAt?.toIso8601String() ?? '—'}'),
             if (status.lastError != null) ...[
               const SizedBox(height: 8),
