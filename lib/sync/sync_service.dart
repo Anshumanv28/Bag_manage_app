@@ -28,8 +28,10 @@ class SyncService {
   bool _started = false;
   bool _syncInFlight = false;
   bool _connected = true;
+  int _pending = 0;
   StreamSubscription<int>? _pendingSub;
   StreamSubscription? _connectivitySub;
+  Timer? _autoSyncTimer;
 
   void _start() {
     if (_started) return;
@@ -37,6 +39,7 @@ class SyncService {
 
     final db = _ref.read(appDbProvider);
     _pendingSub = db.watchPendingPushCount().listen((pending) {
+      _pending = pending;
       _ref.read(syncStateProvider.notifier).setPending(pending);
     });
 
@@ -46,7 +49,18 @@ class SyncService {
     });
     _connectivitySub = Connectivity().onConnectivityChanged.listen((results) {
       final connected = results.any((r) => r != ConnectivityResult.none);
+      final becameOnline = !_connected && connected;
       _connected = connected;
+      if (becameOnline && _pending > 0) {
+        // Kick a sync attempt as soon as we regain network.
+        unawaited(syncOnce());
+      }
+    });
+
+    // Periodic auto-sync: when online, try pushing queued mutations every 5 mins.
+    _autoSyncTimer = Timer.periodic(const Duration(minutes: 5), (_) {
+      if (_pending <= 0) return;
+      unawaited(syncOnce());
     });
   }
 
@@ -158,6 +172,7 @@ class SyncService {
   void dispose() {
     _pendingSub?.cancel();
     _connectivitySub?.cancel();
+    _autoSyncTimer?.cancel();
   }
 }
 
