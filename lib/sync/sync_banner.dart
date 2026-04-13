@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../app/theme.dart';
 import '../data/remote/health_api.dart';
 import 'sync_service.dart';
 import 'sync_state.dart';
@@ -109,19 +110,32 @@ class _SyncBannerState extends ConsumerState<SyncBanner> {
     final status = ref.watch(syncStateProvider);
     final pending = status.pendingMutations;
     final hasError = status.lastError != null && status.lastError!.isNotEmpty;
+    final isOffline = (status.lastError ?? '').toLowerCase().contains('offline');
+
+    final Color? bg = switch ((pending == 0, isOffline, hasError)) {
+      (true, _, false) => AppPalette.successSoft,
+      (_, true, _) => AppPalette.amberSoft,
+      _ => null,
+    };
+    final Color? fg = switch ((pending == 0, isOffline, hasError)) {
+      (true, _, false) => AppPalette.success,
+      (_, true, _) => AppPalette.amber,
+      _ => hasError ? Theme.of(context).colorScheme.error : null,
+    };
 
     return SafeArea(
       top: false,
       child: Padding(
         padding: const EdgeInsets.fromLTRB(12, 0, 12, 8),
         child: Card(
+          color: bg,
           child: Padding(
             padding: const EdgeInsets.all(12),
             child: Row(
               children: [
                 Icon(
                   pending > 0 ? Icons.cloud_upload_outlined : Icons.cloud_done_outlined,
-                  color: hasError ? Theme.of(context).colorScheme.error : null,
+                  color: fg,
                 ),
                 const SizedBox(width: 10),
                 Expanded(
@@ -140,7 +154,7 @@ class _SyncBannerState extends ConsumerState<SyncBanner> {
                             status.lastError!,
                             maxLines: 1,
                             overflow: TextOverflow.ellipsis,
-                            style: TextStyle(color: Theme.of(context).colorScheme.error),
+                            style: TextStyle(color: fg),
                           ),
                         )
                       else
