@@ -1,0 +1,40 @@
+# Dart / Pub
+.dart_tool/
+.packages
+.pub/
+.pub-cache/
+
+# Flutter
+.flutter-plugins
+.flutter-plugins-dependencies
+**/doc/api/
+
+# Build & artifacts
+build/
+**/build/
+*.symbols
+*.map.json
+
+# Test / coverage
+coverage/
+
+# Android signing (never commit)
+**/key.properties
+*.jks
+*.keystore
+
+# IDE / OS
+.idea/
+*.iml
+*.ipr
+*.iws
+.vscode/
+.DS_Store
+Thumbs.db
+desktop.ini
+*~
+
+# Env (never commit secrets)
+.env
+.env.*
+!.env.example
