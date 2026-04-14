@@ -35,6 +35,7 @@ class _ScanScreenState extends ConsumerState<ScanScreen> {
   BarcodeScanner? _scanner;
   bool _isProcessing = false;
   int _frameCount = 0;
+  String? _initError;
 
   late final SopOperation _operation;
   _DepositPhase _depositPhase = _DepositPhase.scanRoll;
@@ -326,65 +327,79 @@ class _ScanScreenState extends ConsumerState<ScanScreen> {
   }
 
   Future<void> _init() async {
-    // BarcodeFormat.all: QR, Code128, EAN, etc. — roll and rack scans accept QR or linear barcodes.
-    _scanner = BarcodeScanner(formats: [BarcodeFormat.all]);
-    _logScan('[INIT] MLKit BarcodeScanner initialized (all formats)');
+    try {
+      // BarcodeFormat.all: QR, Code128, EAN, etc. — roll and rack scans accept QR or linear barcodes.
+      _scanner = BarcodeScanner(formats: [BarcodeFormat.all]);
+      _logScan('[INIT] MLKit BarcodeScanner initialized (all formats)');
 
-    final cameras = await availableCameras();
-    final back = cameras.firstWhere(
-      (c) => c.lensDirection == CameraLensDirection.back,
-      orElse: () => cameras.first,
-    );
+      final cameras = await availableCameras();
+      final back = cameras.firstWhere(
+        (c) => c.lensDirection == CameraLensDirection.back,
+        orElse: () => cameras.first,
+      );
 
-    final controller = CameraController(
-      back,
-      ResolutionPreset.medium,
-      enableAudio: false,
-      imageFormatGroup: Platform.isAndroid
-          ? ImageFormatGroup.nv21
-          : ImageFormatGroup.bgra8888,
-    );
-    await controller.initialize();
-    _logScan(
-      '[INIT] Camera ready (id=${back.name}, orientation=${back.sensorOrientation}, format=${controller.value.previewPauseOrientation})',
-    );
+      final controller = CameraController(
+        back,
+        ResolutionPreset.medium,
+        enableAudio: false,
+        imageFormatGroup: Platform.isAndroid
+            ? ImageFormatGroup.nv21
+            : ImageFormatGroup.bgra8888,
+      );
+      await controller.initialize();
+      _logScan(
+        '[INIT] Camera ready (id=${back.name}, orientation=${back.sensorOrientation}, format=${controller.value.previewPauseOrientation})',
+      );
 
-    await controller.startImageStream((image) async {
-      if (_isProcessing) return;
-      if (_blockCameraProcessing) return;
-      final until = _cooldownUntil;
-      if (until != null && DateTime.now().isBefore(until)) return;
-      _isProcessing = true;
-      _frameCount++;
-      if (_frameCount % 60 == 0) {
-        _logScan(
-          '[FRAME] #$_frameCount ${image.width}x${image.height} planes=${image.planes.length} bytesPerRow=${image.planes.isNotEmpty ? image.planes.first.bytesPerRow : '—'}',
-        );
-      }
-      try {
-        final input = _toInputImage(image, back.sensorOrientation);
-        final barcodes = await _scanner!.processImage(input);
-        if (barcodes.isEmpty) return;
-        final first = barcodes.first;
-        final raw = first.rawValue;
-        if (raw == null || raw.trim().isEmpty || !mounted) return;
+      await controller.startImageStream((image) async {
+        if (_isProcessing) return;
+        if (_blockCameraProcessing) return;
+        final until = _cooldownUntil;
+        if (until != null && DateTime.now().isBefore(until)) return;
+        _isProcessing = true;
+        _frameCount++;
+        if (_frameCount % 60 == 0) {
+          _logScan(
+            '[FRAME] #$_frameCount ${image.width}x${image.height} planes=${image.planes.length} bytesPerRow=${image.planes.isNotEmpty ? image.planes.first.bytesPerRow : '—'}',
+          );
+        }
+        try {
+        final input = _toInputImage(image, rotationDegrees: back.sensorOrientation);
+          final barcodes = await _scanner!.processImage(input);
+          if (barcodes.isEmpty) return;
+          final first = barcodes.first;
+          final raw = first.rawValue;
+          if (raw == null || raw.trim().isEmpty || !mounted) return;
 
-        final trimmed = raw.trim();
-        final preview = trimmed.length <= 80
-            ? trimmed
-            : '${trimmed.substring(0, 80)}…';
-        _logScan('[DETECT] format=${first.format} value="$preview"');
+          final trimmed = raw.trim();
+          final preview =
+              trimmed.length <= 80 ? trimmed : '${trimmed.substring(0, 80)}…';
+          _logScan('[DETECT] format=${first.format} value="$preview"');
 
-        await _onBarcodeScanned(trimmed);
-      } catch (e) {
-        _logScan('[ERR] $e');
-      } finally {
-        _isProcessing = false;
-      }
-    });
+          await _onBarcodeScanned(trimmed);
+        } catch (e) {
+          _logScan('[ERR] $e');
+        } finally {
+          _isProcessing = false;
+        }
+      });
 
-    if (!mounted) return;
-    setState(() => _camera = controller);
+      if (!mounted) return;
+      setState(() {
+        _initError = null;
+        _camera = controller;
+      });
+    } catch (e) {
+      if (!mounted) return;
+      final msg = switch (e) {
+        CameraException(:final code, :final description) =>
+          code == 'CameraAccessDenied'
+              ? 'Camera permission denied. Enable camera permission in Settings and reopen the scanner.'
+              : 'Camera error ($code): ${description ?? 'Unknown error'}',
+        _ => 'Scanner init failed: $e',
+      };
+      setState(() => _initError = msg);
+    }
   }
 
   @override
@@ -397,6 +412,38 @@ class _ScanScreenState extends ConsumerState<ScanScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final initError = _initError;
+    if (initError != null) {
+      return SafeArea(
+        child: Center(
+          child: Padding(
+            padding: const EdgeInsets.all(16),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Icon(Icons.error_outline, size: 44),
+                const SizedBox(height: 10),
+                Text(
+                  initError,
+                  textAlign: TextAlign.center,
+                  style: Theme.of(context).textTheme.bodyMedium,
+                ),
+                const SizedBox(height: 14),
+                FilledButton.icon(
+                  onPressed: () {
+                    setState(() => _initError = null);
+                    _init();
+                  },
+                  icon: const Icon(Icons.refresh),
+                  label: const Text('Retry'),
+                ),
+              ],
+            ),
+          ),
+        ),
+      );
+    }
+
     final camera = _camera;
     if (camera == null || !camera.value.isInitialized) {
       return const Center(child: CircularProgressIndicator());
@@ -748,26 +795,27 @@ String? _parseRackId(String raw) {
   return 'R${m.group(1)}';
 }
 
-InputImage _toInputImage(CameraImage image, int rotationDegrees) {
+InputImage _toInputImage(
+  CameraImage image, {
+  required int rotationDegrees,
+}) {
   final WriteBuffer allBytes = WriteBuffer();
   for (final Plane plane in image.planes) {
     allBytes.putUint8List(plane.bytes);
   }
   final bytes = allBytes.done().buffer.asUint8List();
 
-  final format = Platform.isAndroid
-      ? InputImageFormat.nv21
-      : InputImageFormat.bgra8888;
+  // Prefer the actual camera image format when available.
+  final format = InputImageFormatValue.fromRawValue(image.format.raw) ??
+      (Platform.isAndroid ? InputImageFormat.nv21 : InputImageFormat.bgra8888);
+
+  // Prefer explicit rotation mapping; ML Kit is sensitive to incorrect rotation.
+  final rotation = InputImageRotationValue.fromRawValue(rotationDegrees) ??
+      InputImageRotation.rotation0deg;
 
   final metadata = InputImageMetadata(
     size: Size(image.width.toDouble(), image.height.toDouble()),
-    rotation: switch (rotationDegrees) {
-      0 => InputImageRotation.rotation0deg,
-      90 => InputImageRotation.rotation90deg,
-      180 => InputImageRotation.rotation180deg,
-      270 => InputImageRotation.rotation270deg,
-      _ => InputImageRotation.rotation0deg,
-    },
+    rotation: rotation,
     format: format,
     bytesPerRow: image.planes.first.bytesPerRow,
   );

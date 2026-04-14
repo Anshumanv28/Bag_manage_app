@@ -32,9 +32,6 @@ class AuthController extends AsyncNotifier<AuthSession?> {
   }
 
   Future<void> login({required String phone, required String password}) async {
-    final previous = state;
-    state = const AsyncLoading();
-
     final authApi = ref.read(authApiProvider);
     final tokenStore = ref.read(tokenStoreProvider);
 
@@ -46,13 +43,7 @@ class AuthController extends AsyncNotifier<AuthSession?> {
       ref.read(tokensProvider.notifier).setTokens(tokens);
 
       state = AsyncData(AuthSession(operator: res.operator));
-    } catch (e, st) {
-      // Ensure UI leaves loading state even when offline/server errors occur.
-      state = AsyncError(e, st);
-      // Preserve previous session if any, but still surface the error.
-      if (previous.hasValue) {
-        state = previous;
-      }
+    } catch (e) {
       rethrow;
     }
   }

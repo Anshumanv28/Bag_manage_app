@@ -16,15 +16,16 @@ class App extends ConsumerWidget {
     ref.watch(syncServiceProvider);
 
     final session = ref.watch(authControllerProvider);
+    final current = session.maybeWhen(data: (s) => s, orElse: () => null);
 
     return MaterialApp(
       title: 'Baggage Management',
       theme: appTheme(),
-      home: session.when(
-        loading: () => const _Splash(),
-        error: (e, _) => _ErrorScreen(error: e),
-        data: (s) => s == null ? const LoginScreen() : const HomeScreen(),
-      ),
+      home: (session.isLoading && !session.hasValue)
+          ? const _Splash()
+          : (session.hasError && !session.hasValue)
+              ? _ErrorScreen(error: session.error!)
+              : (current == null ? const LoginScreen() : const HomeScreen()),
     );
   }
 }
