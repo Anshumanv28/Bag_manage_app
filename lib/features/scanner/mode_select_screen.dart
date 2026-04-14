@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../data/local/app_db.dart';
+import '../auth/auth_controller.dart';
 import '../scanner/scan_screen.dart';
 
 class ModeSelectScreen extends ConsumerWidget {
@@ -10,6 +11,12 @@ class ModeSelectScreen extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final db = ref.watch(appDbProvider);
+    final session = ref.watch(authControllerProvider).maybeWhen(
+          data: (s) => s,
+          orElse: () => null,
+        );
+    final depositOk = session?.operator.depositEnabled ?? true;
+    final retrieveOk = session?.operator.retrieveEnabled ?? true;
 
     return SafeArea(
       child: ListView(
@@ -24,9 +31,13 @@ class ModeSelectScreen extends ConsumerWidget {
           const SizedBox(height: 16),
           _ModeCard(
             title: 'Deposit',
-            subtitle: 'Candidate ID → Rack ID → Confirm deposit',
+            subtitle: depositOk
+                ? 'Candidate ID → Rack ID → Confirm deposit'
+                : 'Disabled for your account. Contact an admin.',
             icon: Icons.add_box_outlined,
             badgeText: null,
+            enabled: depositOk,
+            onDisabledTap: () => _showModeLocked(context, deposit: true),
             onTap: () {
               Navigator.of(context).push(
                 MaterialPageRoute(
@@ -44,9 +55,13 @@ class ModeSelectScreen extends ConsumerWidget {
                   pendingRetrievals > 0 ? '$pendingRetrievals pending' : null;
               return _ModeCard(
                 title: 'Retrieve',
-                subtitle: 'Candidate ID → Confirm return',
+                subtitle: retrieveOk
+                    ? 'Candidate ID → Confirm return'
+                    : 'Disabled for your account. Contact an admin.',
                 icon: Icons.inventory_2_outlined,
                 badgeText: badgeText,
+                enabled: retrieveOk,
+                onDisabledTap: () => _showModeLocked(context, deposit: false),
                 onTap: () {
                   Navigator.of(context).push(
                     MaterialPageRoute(
@@ -63,6 +78,23 @@ class ModeSelectScreen extends ConsumerWidget {
   }
 }
 
+Future<void> _showModeLocked(BuildContext context, {required bool deposit}) {
+  return showDialog<void>(
+    context: context,
+    builder: (ctx) => AlertDialog(
+      title: Text(deposit ? 'Deposit locked' : 'Retrieve locked'),
+      content: Text(
+        deposit
+            ? 'Deposit is turned off for your operator account. Ask an admin to enable it in the dashboard.'
+            : 'Retrieve is turned off for your operator account. Ask an admin to enable it in the dashboard.',
+      ),
+      actions: [
+        TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('OK')),
+      ],
+    ),
+  );
+}
+
 class _ModeCard extends StatelessWidget {
   const _ModeCard({
     required this.title,
@@ -70,6 +102,8 @@ class _ModeCard extends StatelessWidget {
     required this.icon,
     required this.badgeText,
     required this.onTap,
+    this.enabled = true,
+    this.onDisabledTap,
   });
 
   final String title;
@@ -77,21 +111,27 @@ class _ModeCard extends StatelessWidget {
   final IconData icon;
   final String? badgeText;
   final VoidCallback onTap;
+  final bool enabled;
+  final VoidCallback? onDisabledTap;
 
   @override
   Widget build(BuildContext context) {
     return Card(
       clipBehavior: Clip.antiAlias,
       child: InkWell(
-        onTap: onTap,
+        onTap: enabled ? onTap : () => onDisabledTap?.call(),
         child: Padding(
           padding: const EdgeInsets.all(16),
           child: Row(
             children: [
               CircleAvatar(
                 radius: 24,
-                backgroundColor: Theme.of(context).colorScheme.primaryContainer,
-                foregroundColor: Theme.of(context).colorScheme.onPrimaryContainer,
+                backgroundColor: enabled
+                    ? Theme.of(context).colorScheme.primaryContainer
+                    : Theme.of(context).colorScheme.surfaceContainerHighest,
+                foregroundColor: enabled
+                    ? Theme.of(context).colorScheme.onPrimaryContainer
+                    : Theme.of(context).colorScheme.onSurfaceVariant,
                 child: Icon(icon),
               ),
               const SizedBox(width: 16),

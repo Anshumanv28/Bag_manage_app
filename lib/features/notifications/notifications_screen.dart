@@ -8,6 +8,87 @@ import 'notifications_controller.dart';
 class NotificationsScreen extends ConsumerWidget {
   const NotificationsScreen({super.key});
 
+  void _openDetails(BuildContext context, AppNotification n) {
+    showDialog<void>(
+      context: context,
+      builder: (ctx) {
+        final details = n.details;
+        final muts = (details?['mutations'] is List) ? (details!['mutations'] as List) : const [];
+        return AlertDialog(
+          title: Text(n.title ?? 'Notification'),
+          content: SizedBox(
+            width: double.maxFinite,
+            child: SingleChildScrollView(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(n.message),
+                  const SizedBox(height: 8),
+                  Text(
+                    'Created: ${n.createdAt.toLocal().toIso8601String()}',
+                    style: Theme.of(ctx).textTheme.bodySmall?.copyWith(
+                          color: AppPalette.textSecondary,
+                        ),
+                  ),
+                  if (n.kind == AppNotificationKind.sync && details != null) ...[
+                    const SizedBox(height: 12),
+                    Text('Sync details', style: Theme.of(ctx).textTheme.titleSmall),
+                    const SizedBox(height: 6),
+                    Text(
+                      'Device: ${details['deviceId'] ?? '—'} • OK: ${details['ok'] ?? 0} • Errors: ${details['errors'] ?? 0}',
+                      style: Theme.of(ctx).textTheme.bodySmall,
+                    ),
+                    const SizedBox(height: 10),
+                    if (muts.isNotEmpty)
+                      ...muts.map((raw) {
+                        final m = raw is Map ? raw : const {};
+                        final ok = m['ok'] == true;
+                        final type = m['type']?.toString() ?? '—';
+                        final id = (m['bookingId'] ??
+                                m['activityId'] ??
+                                m['scanEventId'] ??
+                                m['id'])
+                            ?.toString();
+                        final err = m['error']?.toString();
+                        final subtitleBits = <String>[
+                          if (id != null && id.isNotEmpty) id,
+                          if (m['candidateId'] != null) 'cand ${m['candidateId']}',
+                          if (m['rackId'] != null) 'rack ${m['rackId']}',
+                        ];
+                        return ListTile(
+                          dense: true,
+                          leading: Icon(
+                            ok ? Icons.check_circle_outline : Icons.error_outline,
+                            color: ok ? AppPalette.success : Theme.of(ctx).colorScheme.error,
+                          ),
+                          title: Text(type),
+                          subtitle: Text(
+                            '${subtitleBits.join(' • ')}${err == null ? '' : '\n$err'}',
+                            maxLines: 4,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                          isThreeLine: err != null,
+                        );
+                      }),
+                    if (muts.isEmpty)
+                      const Text('No operation details attached.'),
+                  ],
+                ],
+              ),
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(ctx).pop(),
+              child: const Text('Close'),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final state = ref.watch(notificationsControllerProvider);
@@ -66,9 +147,18 @@ class NotificationsScreen extends ConsumerWidget {
             const SizedBox(height: 10),
             Card(
               child: ListTile(
+                onTap: () => _openDetails(context, n),
                 leading: Icon(_iconFor(n.level), color: _colorFor(context, n.level)),
-                title: Text(n.message),
-                subtitle: Text(n.createdAt.toLocal().toIso8601String()),
+                title: Text(
+                  n.title ?? n.message,
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                ),
+                subtitle: Text(
+                  n.createdAt.toLocal().toIso8601String(),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                ),
                 trailing: n.read ? null : const Icon(Icons.circle, size: 10),
               ),
             ),

@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:dio/dio.dart';
 
@@ -175,7 +176,14 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                         ],
                         TextField(
                           controller: _phoneController,
-                          keyboardType: TextInputType.phone,
+                          keyboardType: const TextInputType.numberWithOptions(
+                            decimal: false,
+                            signed: false,
+                          ),
+                          inputFormatters: [
+                            FilteringTextInputFormatter.digitsOnly,
+                            LengthLimitingTextInputFormatter(10),
+                          ],
                           textInputAction: TextInputAction.next,
                           autofillHints: const [AutofillHints.username],
                           onChanged: (_) {
@@ -189,7 +197,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                           },
                           decoration: InputDecoration(
                             labelText: 'Phone',
-                            hintText: '+1 555 123 4567',
+                            hintText: '5551234567',
                             prefixIcon: const Icon(Icons.phone_outlined),
                           ),
                         ),

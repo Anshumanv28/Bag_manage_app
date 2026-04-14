@@ -87,6 +87,37 @@ class BookingsDoneScreen extends ConsumerWidget {
               );
             },
           ),
+
+          const SizedBox(height: 16),
+          Text('Flagged', style: Theme.of(context).textTheme.titleMedium),
+          const SizedBox(height: 8),
+          StreamBuilder<List<Booking>>(
+            stream: db.watchBookingsByStatuses(const ['flagged']),
+            builder: (context, snap) {
+              final bookings = snap.data ?? const <Booking>[];
+              if (bookings.isEmpty) {
+                return const Padding(
+                  padding: EdgeInsets.only(top: 16),
+                  child: Text('No flagged bookings.'),
+                );
+              }
+
+              return Column(
+                children: [
+                  for (final b in bookings) ...[
+                    Card(
+                      child: ListTile(
+                        leading: const Icon(Icons.flag_outlined, color: AppPalette.amber),
+                        title: Text('Roll: ${b.candidateId}'),
+                        subtitle: Text('Rack: ${b.rackId} • Flagged'),
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                  ],
+                ],
+              );
+            },
+          ),
         ],
       ),
     );

@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io' show Platform;
 
 import 'package:camera/camera.dart';
@@ -12,14 +13,15 @@ import '../../app/alerts.dart';
 import '../../app/theme.dart';
 import '../../data/local/app_db.dart';
 import '../auth/auth_controller.dart';
+import '../../data/remote/health_api.dart';
+import '../../sync/sync_service.dart';
+import '../../sync/sync_state.dart';
 import 'widgets/sop_progress_header.dart';
 
 /// SOP: Deposit (admit + rack + confirm) vs Retrieve (admit only + show rack + confirm return).
 enum SopOperation { deposit, retrieve }
 
-enum _DepositPhase { scanRoll, rollAwaitingOk, scanRack, confirmDeposit }
-
-enum _RetrievePhase { scanRoll, confirmReturn }
+enum _FirstScan { candidate, rack }
 
 class ScanScreen extends ConsumerStatefulWidget {
   const ScanScreen({super.key, required this.operation});
@@ -38,29 +40,38 @@ class _ScanScreenState extends ConsumerState<ScanScreen> {
   String? _initError;
 
   late final SopOperation _operation;
-  _DepositPhase _depositPhase = _DepositPhase.scanRoll;
-  _RetrievePhase _retrievePhase = _RetrievePhase.scanRoll;
 
-  String? _depositRoll;
-  String? _depositRack;
-  Booking? _retrieveBooking;
+  _FirstScan? _depositFirst;
+  String? _depositCandidateId;
+  String? _depositRackId;
+
+  _FirstScan? _retrieveFirst;
+  String? _retrieveCandidateId;
+  String? _retrieveRackId;
+  Booking? _retrieveResolvedBooking;
 
   Timer? _pendingTimer;
   DateTime? _cooldownUntil;
+  bool _didAutoSyncConflict = false;
 
   int _activeStepIndex() {
     if (_operation == SopOperation.deposit) {
-      return switch (_depositPhase) {
-        _DepositPhase.scanRoll => 0,
-        _DepositPhase.rollAwaitingOk => 0,
-        _DepositPhase.scanRack => 1,
-        _DepositPhase.confirmDeposit => 2,
-      };
+      final n = (_depositCandidateId != null ? 1 : 0) + (_depositRackId != null ? 1 : 0);
+      if (n <= 0) return 0;
+      if (n == 1) return 1;
+      return 2;
     }
-    return switch (_retrievePhase) {
-      _RetrievePhase.scanRoll => 0,
-      _RetrievePhase.confirmReturn => 1,
-    };
+    final n = (_retrieveCandidateId != null ? 1 : 0) + (_retrieveRackId != null ? 1 : 0);
+    if (n <= 0) return 0;
+    if (n == 1) return 1;
+    return 2;
+  }
+
+  List<String> _stepsFor(SopOperation op) {
+    final first = op == SopOperation.deposit ? _depositFirst : _retrieveFirst;
+    final a = first == _FirstScan.rack ? 'Rack ID' : 'Candidate ID';
+    final b = first == _FirstScan.rack ? 'Candidate ID' : 'Rack ID';
+    return [a, b, 'Confirm'];
   }
 
   void _logScan(String message) {
@@ -76,16 +87,149 @@ class _ScanScreenState extends ConsumerState<ScanScreen> {
     await showAppAlert(context, ref: ref, message: msg, level: level);
   }
 
+  Future<void> _runRefreshSync() async {
+    final stage = ValueNotifier<String>('Checking server…');
+
+    if (!mounted) return;
+    // ignore: unawaited_futures
+    showDialog<void>(
+      context: context,
+      barrierDismissible: false,
+      builder: (_) {
+        return PopScope(
+          canPop: false,
+          child: AlertDialog(
+            title: const Text('Syncing…'),
+            content: ValueListenableBuilder<String>(
+              valueListenable: stage,
+              builder: (context, value, _) {
+                return Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text('Pushing local changes and pulling latest bookings…'),
+                    const SizedBox(height: 16),
+                    Row(
+                      children: [
+                        const SizedBox(
+                          width: 20,
+                          height: 20,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        ),
+                        const SizedBox(width: 12),
+                        Expanded(child: Text(value)),
+                      ],
+                    ),
+                  ],
+                );
+              },
+            ),
+          ),
+        );
+      },
+    );
+
+    final health = await ref.read(healthApiProvider).isHealthy().catchError((_) => false);
+    if (!health) {
+      ref.read(syncStateProvider.notifier).setError('server unhealthy');
+      if (mounted) Navigator.of(context, rootNavigator: true).pop();
+      stage.dispose();
+      await _alert('Server is unavailable. Try again shortly.', level: AppAlertLevel.warning);
+      return;
+    }
+
+    stage.value = 'Syncing…';
+    try {
+      await ref.read(syncServiceProvider).syncOnce(trigger: SyncTrigger.manual);
+    } finally {
+      if (mounted) Navigator.of(context, rootNavigator: true).pop();
+      stage.dispose();
+    }
+  }
+
   void _resetAllFlow() {
     _pendingTimer?.cancel();
     _pendingTimer = null;
-    _depositPhase = _DepositPhase.scanRoll;
-    _retrievePhase = _RetrievePhase.scanRoll;
-    _depositRoll = null;
-    _depositRack = null;
-    _retrieveBooking = null;
+    _depositFirst = null;
+    _depositCandidateId = null;
+    _depositRackId = null;
+    _retrieveFirst = null;
+    _retrieveCandidateId = null;
+    _retrieveRackId = null;
+    _retrieveResolvedBooking = null;
     _cooldownUntil = null;
+    _didAutoSyncConflict = false;
   }
+
+  Future<void> _showContactOtherOperator(String phone) async {
+    if (!mounted) return;
+    await showDialog<void>(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) {
+        return AlertDialog(
+          title: const Text('Contact other operator'),
+          content: Text(
+            'This booking was created by operator $phone.\n\nAsk them to Sync, then press Refresh here.',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(ctx).pop(),
+              child: const Text('OK'),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
+  Future<void> _logActivity({
+    required String bookingId,
+    required String eventType,
+    Map<String, Object?>? metadata,
+  }) async {
+    final session =
+        ref.read(authControllerProvider).maybeWhen(data: (s) => s, orElse: () => null);
+    final operatorId = session?.operator.phone;
+    if (operatorId == null || operatorId.isEmpty) return;
+    final db = ref.read(appDbProvider);
+    await db.insertBookingActivity(
+      id: const Uuid().v4(),
+      bookingId: bookingId,
+      operatorId: operatorId,
+      deviceId: null,
+      eventType: eventType,
+      occurredAt: DateTime.now(),
+      metadataJson: metadata == null ? null : jsonEncode(metadata),
+    );
+  }
+
+  Future<void> _logScanEvent({
+    required SopOperation operation,
+    required String eventType,
+    String? candidateId,
+    String? rackId,
+    Map<String, Object?>? metadata,
+  }) async {
+    final session =
+        ref.read(authControllerProvider).maybeWhen(data: (s) => s, orElse: () => null);
+    final operatorId = session?.operator.phone;
+    if (operatorId == null || operatorId.isEmpty) return;
+    final db = ref.read(appDbProvider);
+    await db.insertScanEvent(
+      id: const Uuid().v4(),
+      operatorId: operatorId,
+      operation: operation == SopOperation.deposit ? 'deposit' : 'retrieve',
+      eventType: eventType,
+      candidateId: candidateId,
+      rackId: rackId,
+      occurredAt: DateTime.now(),
+      metadataJson: metadata == null ? null : jsonEncode(metadata),
+    );
+  }
+
+  // (removed) old picker-based retrieval disambiguation — retrieval now requires
+  // scanning both IDs and escalates to admin when ambiguous.
 
   @override
   void initState() {
@@ -96,90 +240,91 @@ class _ScanScreenState extends ConsumerState<ScanScreen> {
 
   bool get _blockCameraProcessing {
     if (_operation == SopOperation.deposit) {
-      return _depositPhase == _DepositPhase.rollAwaitingOk ||
-          _depositPhase == _DepositPhase.confirmDeposit;
+      return _depositCandidateId != null && _depositRackId != null;
     }
-    return _retrievePhase == _RetrievePhase.confirmReturn;
+    return _retrieveCandidateId != null && _retrieveRackId != null && _retrieveResolvedBooking != null;
   }
 
   String _hintText() {
     if (_operation == SopOperation.deposit) {
-      return switch (_depositPhase) {
-        _DepositPhase.scanRoll => 'DEPOSIT: Scan admit card (roll number)',
-        _DepositPhase.rollAwaitingOk => 'Review roll number, tap OK',
-        _DepositPhase.scanRack => 'Scan rack QR or barcode',
-        _DepositPhase.confirmDeposit => 'Place bag in rack, then confirm',
-      };
+      if (_depositCandidateId == null && _depositRackId == null) {
+        return 'DEPOSIT: Scan Candidate ID or Rack ID';
+      }
+      if (_depositCandidateId == null) return 'Scan Candidate ID';
+      if (_depositRackId == null) return 'Scan Rack ID';
+      return 'Place bag in rack, then confirm';
     }
-    return switch (_retrievePhase) {
-      _RetrievePhase.scanRoll => 'RETRIEVE: Scan admit card (roll number)',
-      _RetrievePhase.confirmReturn => 'Go to rack and locate bag',
-    };
+    if (_retrieveCandidateId == null && _retrieveRackId == null) {
+      return 'RETRIEVE: Scan Candidate ID or Rack ID';
+    }
+    if (_retrieveCandidateId == null) return 'Scan Candidate ID';
+    if (_retrieveRackId == null) return 'Scan Rack ID';
+    return 'Verify bag, then confirm return';
   }
 
-  Future<void> _onDepositRollScanned(String roll) async {
+  Future<void> _onDepositCandidateScanned(String candidateId) async {
     final db = ref.read(appDbProvider);
-    final existing = await db.findActiveBookingByCandidateId(roll);
-    if (existing != null) {
+    final dups = await db.findActiveBookingsByCandidateId(candidateId);
+    if (dups.length > 1) {
       await _alert(
-        'Deposit already exists for this Candidate ID.',
+        'Multiple active deposits already use this Candidate ID. You may continue, '
+        'but escalate to an admin — bookings will be flagged.',
         level: AppAlertLevel.warning,
       );
-      _cooldownUntil = DateTime.now().add(const Duration(milliseconds: 1200));
-      return;
+    } else if (dups.length == 1) {
+      await _alert(
+        'An active deposit already exists for this Candidate ID. Adding another will '
+        'flag both for admin review.',
+        level: AppAlertLevel.warning,
+      );
     }
+
+    _depositFirst ??= _FirstScan.candidate;
+    await _logScanEvent(
+      operation: SopOperation.deposit,
+      eventType: 'candidate_scanned',
+      candidateId: candidateId,
+      metadata: {'phase': 'deposit'},
+    );
+
     setState(() {
-      _depositRoll = roll;
-      _depositPhase = _DepositPhase.rollAwaitingOk;
+      _depositCandidateId = candidateId;
     });
     _cooldownUntil = DateTime.now().add(const Duration(milliseconds: 1200));
   }
 
-  void _onDepositRollOk() {
-    final roll = _depositRoll;
-    if (roll == null) return;
-    setState(() {
-      _depositPhase = _DepositPhase.scanRack;
-    });
-    // Fire-and-forget: do not block UI progression.
-    unawaited(_alert('Now scan Rack ID (QR or barcode).'));
-    _cooldownUntil = DateTime.now().add(const Duration(milliseconds: 800));
-  }
-
   Future<void> _onDepositRackScanned(String rackId) async {
-    final roll = _depositRoll;
-    if (roll == null) return;
-
     final db = ref.read(appDbProvider);
-    final rackInUse = await db.findActiveBookingByRackId(rackId);
-    if (rackInUse != null) {
+    final rackDups = await db.findActiveBookingsByRackId(rackId);
+    if (rackDups.length > 1) {
       await _alert(
-        'Rack already in use (one bag per rack).',
+        'Multiple active deposits already use this rack. You may continue, but escalate to an admin.',
         level: AppAlertLevel.warning,
       );
-      _cooldownUntil = DateTime.now().add(const Duration(milliseconds: 1200));
-      return;
-    }
-    final rollAgain = await db.findActiveBookingByCandidateId(roll);
-    if (rollAgain != null) {
+    } else if (rackDups.length == 1) {
       await _alert(
-        'Deposit already exists for this Candidate ID.',
+        'This rack already has an active bag. Adding another will flag bookings for admin review.',
         level: AppAlertLevel.warning,
       );
-      _cooldownUntil = DateTime.now().add(const Duration(milliseconds: 1200));
-      return;
     }
+
+    _depositFirst ??= _FirstScan.rack;
+    await _logScanEvent(
+      operation: SopOperation.deposit,
+      eventType: 'rack_scanned',
+      rackId: rackId,
+      metadata: {'phase': 'deposit'},
+    );
 
     setState(() {
-      _depositRack = rackId;
-      _depositPhase = _DepositPhase.confirmDeposit;
+      _depositRackId = rackId;
     });
     _cooldownUntil = DateTime.now().add(const Duration(milliseconds: 800));
   }
 
   Future<void> _confirmDeposit() async {
-    final roll = _depositRoll;
-    final rack = _depositRack;
+    final roll = _depositCandidateId;
+    final rack = _depositRackId;
     if (roll == null || rack == null) return;
 
     final session = ref
@@ -192,21 +337,18 @@ class _ScanScreenState extends ConsumerState<ScanScreen> {
     }
 
     final db = ref.read(appDbProvider);
-    final rackInUse = await db.findActiveBookingByRackId(rack);
-    if (rackInUse != null) {
-      await _alert('Rack already in use.', level: AppAlertLevel.warning);
-      return;
-    }
-    if (await db.findActiveBookingByCandidateId(roll) != null) {
-      await _alert(
-        'Deposit already exists for this Candidate ID.',
-        level: AppAlertLevel.warning,
-      );
-      return;
-    }
-
     final now = DateTime.now();
     final bookingId = const Uuid().v4();
+
+    // Do not hard-block deposit creation even if local data is stale or indicates conflicts.
+    // Conflicts are handled server-side via flagged bookings.
+
+    await _logActivity(
+      bookingId: bookingId,
+      eventType: 'deposit_confirmed',
+      metadata: {'rackId': rack, 'candidateId': roll},
+    );
+
     await db.upsertBooking(
       id: bookingId,
       rackId: rack,
@@ -229,27 +371,234 @@ class _ScanScreenState extends ConsumerState<ScanScreen> {
     _cooldownUntil = DateTime.now().add(const Duration(milliseconds: 1200));
   }
 
-  Future<void> _onRetrieveRollScanned(String roll) async {
+  Future<void> _showContactAdminMatches({
+    required String title,
+    required String message,
+    required List<Booking> matches,
+    required _FirstScan clearOnRescan,
+  }) async {
     final db = ref.read(appDbProvider);
-    final booking = await db.findActiveBookingByCandidateId(roll);
-    if (booking == null) {
-      await _alert(
-        'No deposit record for this Candidate ID. Escalate to supervisor.',
-        level: AppAlertLevel.warning,
-      );
-      _cooldownUntil = DateTime.now().add(const Duration(milliseconds: 1200));
+    final flagged = <String, bool>{};
+    for (final b in matches) {
+      flagged[b.id] = await db.isBookingFlagged(b.id);
+    }
+    if (!mounted) return;
+    await showDialog<void>(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) {
+        return AlertDialog(
+          title: Text(title),
+          content: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(message, style: Theme.of(ctx).textTheme.bodySmall),
+                const SizedBox(height: 12),
+                ...matches.map((b) {
+                  final f = flagged[b.id] == true;
+                  return ListTile(
+                    dense: true,
+                    leading: Icon(
+                      f ? Icons.flag_outlined : Icons.luggage_outlined,
+                      color: f ? Theme.of(ctx).colorScheme.error : null,
+                    ),
+                    title: Text('Rack ${b.rackId} · ${b.candidateId}'),
+                    subtitle: Text('${b.startedAt.toLocal()}${f ? ' · FLAGGED' : ''}'),
+                  );
+                }),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () {
+                setState(() {
+                  if (clearOnRescan == _FirstScan.candidate) {
+                    _retrieveCandidateId = null;
+                  } else {
+                    _retrieveRackId = null;
+                  }
+                  _retrieveResolvedBooking = null;
+                });
+                Navigator.pop(ctx);
+              },
+              child: const Text('Rescan'),
+            ),
+            TextButton(
+              onPressed: () => Navigator.pop(ctx),
+              child: const Text('Contact admin'),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
+  Future<void> _attemptResolveRetrieve({required _FirstScan lastScanned}) async {
+    final candidate = _retrieveCandidateId;
+    final rack = _retrieveRackId;
+    final db = ref.read(appDbProvider);
+
+    // Require both scans for confirmation; before that we only check for ambiguity.
+    if (candidate != null && rack != null) {
+      final byCandidate = await db.findActiveBookingsByCandidateId(candidate);
+      final byRack = await db.findActiveBookingsByRackId(rack);
+
+      final byRackIds = {for (final b in byRack) b.id};
+      final intersection = byCandidate.where((b) => byRackIds.contains(b.id)).toList();
+
+      if (intersection.isEmpty) {
+        // Stale-data UX: auto-sync once, then retry.
+        if (!_didAutoSyncConflict) {
+          _didAutoSyncConflict = true;
+          await ref.read(syncServiceProvider).syncOnce(trigger: SyncTrigger.autoTimer);
+          await _attemptResolveRetrieve(lastScanned: lastScanned);
+          return;
+        }
+
+        // Conflict UX: only prompt to contact the booking's operator when the
+        // local DB indicates a conflict/flagged booking (not just because
+        // deposit/retrieve operators can differ).
+        for (final b in [...byCandidate, ...byRack]) {
+          final flagged = await db.isBookingFlagged(b.id);
+          if (flagged) {
+            await _alert(
+              'Conflicting booking detected (flagged). Escalate to admin.',
+              level: AppAlertLevel.warning,
+            );
+            await _showContactOtherOperator(b.operatorId);
+            break;
+          }
+        }
+
+        await _alert('No active booking matches BOTH Candidate ID and Rack ID. Contact admin.',
+            level: AppAlertLevel.warning);
+        setState(() {
+          if (lastScanned == _FirstScan.candidate) {
+            _retrieveCandidateId = null;
+          } else {
+            _retrieveRackId = null;
+          }
+          _retrieveResolvedBooking = null;
+        });
+        return;
+      }
+      if (intersection.length > 1) {
+        await _showContactAdminMatches(
+          title: 'Multiple matches — Contact admin',
+          message:
+              'Multiple active bookings match these scans. Do not proceed; contact an admin.',
+          matches: intersection,
+          clearOnRescan: lastScanned,
+        );
+        setState(() => _retrieveResolvedBooking = null);
+        return;
+      }
+
+      final resolved = intersection.single;
+      final isFlagged =
+          resolved.status == 'flagged' || await db.isBookingFlagged(resolved.id);
+      if (isFlagged) {
+        await _showContactAdminMatches(
+          title: 'Flagged booking — Contact admin',
+          message:
+              'This booking is flagged as conflicting. Do not retrieve/complete it. Contact an admin.',
+          matches: [resolved],
+          clearOnRescan: lastScanned,
+        );
+        setState(() => _retrieveResolvedBooking = null);
+        return;
+      }
+
+      setState(() => _retrieveResolvedBooking = resolved);
       return;
     }
+
+    // Single scan stage: if ambiguous, show matches + contact admin.
+    if (candidate != null) {
+      final matches = await db.findActiveBookingsByCandidateId(candidate);
+      if (matches.isEmpty && !_didAutoSyncConflict) {
+        _didAutoSyncConflict = true;
+        await ref.read(syncServiceProvider).syncOnce(trigger: SyncTrigger.autoTimer);
+        await _attemptResolveRetrieve(lastScanned: lastScanned);
+        return;
+      }
+      if (matches.length > 1) {
+        await _showContactAdminMatches(
+          title: 'Multiple matches — Contact admin',
+          message:
+              'Multiple active bookings share this Candidate ID. Scan the Rack ID only after admin confirms the correct mapping.',
+          matches: matches,
+          clearOnRescan: lastScanned,
+        );
+      }
+    }
+    if (rack != null) {
+      final matches = await db.findActiveBookingsByRackId(rack);
+      if (matches.isEmpty && !_didAutoSyncConflict) {
+        _didAutoSyncConflict = true;
+        await ref.read(syncServiceProvider).syncOnce(trigger: SyncTrigger.autoTimer);
+        await _attemptResolveRetrieve(lastScanned: lastScanned);
+        return;
+      }
+      if (matches.length > 1) {
+        await _showContactAdminMatches(
+          title: 'Multiple matches — Contact admin',
+          message:
+              'Multiple active bookings share this Rack ID. Scan the Candidate ID only after admin confirms the correct mapping.',
+          matches: matches,
+          clearOnRescan: lastScanned,
+        );
+      }
+    }
+  }
+
+  Future<void> _onRetrieveCandidateScanned(String candidateId) async {
+    _retrieveFirst ??= _FirstScan.candidate;
+    await _logScanEvent(
+      operation: SopOperation.retrieve,
+      eventType: 'candidate_scanned',
+      candidateId: candidateId,
+      metadata: {'phase': 'retrieve'},
+    );
     setState(() {
-      _retrieveBooking = booking;
-      _retrievePhase = _RetrievePhase.confirmReturn;
+      _retrieveCandidateId = candidateId;
+      _retrieveResolvedBooking = null;
     });
+
+    await _attemptResolveRetrieve(lastScanned: _FirstScan.candidate);
+    _cooldownUntil = DateTime.now().add(const Duration(milliseconds: 1200));
+  }
+
+  Future<void> _onRetrieveRackScanned(String rackId) async {
+    _retrieveFirst ??= _FirstScan.rack;
+    await _logScanEvent(
+      operation: SopOperation.retrieve,
+      eventType: 'rack_scanned',
+      rackId: rackId,
+      metadata: {'phase': 'retrieve'},
+    );
+    setState(() {
+      _retrieveRackId = rackId;
+      _retrieveResolvedBooking = null;
+    });
+
+    await _attemptResolveRetrieve(lastScanned: _FirstScan.rack);
     _cooldownUntil = DateTime.now().add(const Duration(milliseconds: 1200));
   }
 
   Future<void> _confirmReturn() async {
-    final booking = _retrieveBooking;
+    final booking = _retrieveResolvedBooking;
     if (booking == null) return;
+    if (booking.status == 'flagged') {
+      await _alert(
+        'This booking is flagged as conflicting. Contact admin.',
+        level: AppAlertLevel.warning,
+      );
+      return;
+    }
 
     final session = ref
         .read(authControllerProvider)
@@ -263,11 +612,17 @@ class _ScanScreenState extends ConsumerState<ScanScreen> {
     final now = DateTime.now();
     final db = ref.read(appDbProvider);
 
+    await _logActivity(
+      bookingId: booking.id,
+      eventType: 'return_confirmed',
+      metadata: {'rackId': booking.rackId, 'candidateId': booking.candidateId},
+    );
+
     await db.upsertBooking(
       id: booking.id,
       rackId: booking.rackId,
       candidateId: booking.candidateId,
-      operatorId: operatorId,
+      operatorId: booking.operatorId,
       status: 'complete',
       startedAt: booking.startedAt,
       endedAt: now,
@@ -285,17 +640,35 @@ class _ScanScreenState extends ConsumerState<ScanScreen> {
   }
 
   void _cancelDepositSummary() {
+    unawaited(
+      _logScanEvent(
+        operation: SopOperation.deposit,
+        eventType: 'deposit_cancelled',
+        candidateId: _depositCandidateId,
+        rackId: _depositRackId,
+      ),
+    );
     setState(() {
-      _depositPhase = _DepositPhase.scanRoll;
-      _depositRoll = null;
-      _depositRack = null;
+      _depositFirst = null;
+      _depositCandidateId = null;
+      _depositRackId = null;
     });
   }
 
   void _cancelRetrieve() {
+    unawaited(
+      _logScanEvent(
+        operation: SopOperation.retrieve,
+        eventType: 'retrieve_cancelled',
+        candidateId: _retrieveCandidateId,
+        rackId: _retrieveRackId,
+      ),
+    );
     setState(() {
-      _retrievePhase = _RetrievePhase.scanRoll;
-      _retrieveBooking = null;
+      _retrieveFirst = null;
+      _retrieveCandidateId = null;
+      _retrieveRackId = null;
+      _retrieveResolvedBooking = null;
     });
   }
 
@@ -307,21 +680,16 @@ class _ScanScreenState extends ConsumerState<ScanScreen> {
     final rackId = _parseRackId(trimmed);
 
     if (_operation == SopOperation.deposit) {
-      switch (_depositPhase) {
-        case _DepositPhase.scanRoll:
-          if (candidateId == null) return;
-          await _onDepositRollScanned(candidateId);
-        case _DepositPhase.rollAwaitingOk:
-        case _DepositPhase.confirmDeposit:
-          break;
-        case _DepositPhase.scanRack:
-          if (rackId == null) return;
-          await _onDepositRackScanned(rackId);
+      if (candidateId != null) {
+        await _onDepositCandidateScanned(candidateId);
+      } else if (rackId != null) {
+        await _onDepositRackScanned(rackId);
       }
     } else {
-      if (_retrievePhase == _RetrievePhase.scanRoll) {
-        if (candidateId == null) return;
-        await _onRetrieveRollScanned(candidateId);
+      if (candidateId != null) {
+        await _onRetrieveCandidateScanned(candidateId);
+      } else if (rackId != null) {
+        await _onRetrieveRackScanned(rackId);
       }
     }
   }
@@ -477,53 +845,32 @@ class _ScanScreenState extends ConsumerState<ScanScreen> {
             right: 8,
             top: 8,
             child: SopProgressHeader(
-              steps: _operation == SopOperation.deposit
-                  ? const ['Candidate ID', 'Rack ID', 'Confirm']
-                  : const ['Candidate ID', 'Confirm'],
+              steps: _stepsFor(_operation),
               activeIndex: _activeStepIndex(),
               subline: _operation == SopOperation.deposit
                   ? 'Deposit flow'
                   : 'Retrieve flow',
             ),
           ),
+          Positioned(
+            top: 10,
+            right: 10,
+            child: DecoratedBox(
+              decoration: BoxDecoration(
+                color: Colors.black.withValues(alpha: 0.35),
+                borderRadius: BorderRadius.circular(999),
+              ),
+              child: IconButton(
+                tooltip: 'Sync / Refresh',
+                icon: const Icon(Icons.sync, color: Colors.white),
+                onPressed: _runRefreshSync,
+              ),
+            ),
+          ),
           // (removed) current values strip
           if (_operation == SopOperation.deposit &&
-              _depositPhase == _DepositPhase.scanRack &&
-              _depositRoll != null)
-            Positioned(
-              left: 8,
-              right: 8,
-              top: 184,
-              child: _ScanPill(
-                icon: Icons.badge_outlined,
-                title: 'Candidate ID scanned',
-                value: _depositRoll!,
-              ),
-            ),
-          if (_operation == SopOperation.deposit &&
-              _depositPhase == _DepositPhase.rollAwaitingOk &&
-              _depositRoll != null)
-            Positioned(
-              left: 16,
-              right: 16,
-              bottom: 96,
-              child: _ActionSheet(
-                title: 'Candidate ID',
-                subtitle: 'Confirm the roll number before scanning rack ID.',
-                lines: [
-                  _KeyValueLine(label: 'Roll', value: _depositRoll!),
-                ],
-                primaryLabel: 'OK',
-                primaryIcon: Icons.check,
-                onPrimary: _onDepositRollOk,
-                secondaryLabel: 'Rescan',
-                onSecondary: _cancelDepositSummary,
-              ),
-            ),
-          if (_operation == SopOperation.deposit &&
-              _depositPhase == _DepositPhase.confirmDeposit &&
-              _depositRoll != null &&
-              _depositRack != null)
+              _depositCandidateId != null &&
+              _depositRackId != null)
             Positioned(
               left: 16,
               right: 16,
@@ -532,8 +879,8 @@ class _ScanScreenState extends ConsumerState<ScanScreen> {
                 title: 'Confirm deposit',
                 subtitle: 'Place the bag in the rack, then confirm.',
                 lines: [
-                  _KeyValueLine(label: 'Roll', value: _depositRoll!),
-                  _KeyValueLine(label: 'Rack', value: _depositRack!),
+                  _KeyValueLine(label: 'Roll', value: _depositCandidateId!),
+                  _KeyValueLine(label: 'Rack', value: _depositRackId!),
                 ],
                 primaryLabel: 'Confirm deposit',
                 primaryIcon: Icons.check_circle_outline,
@@ -543,29 +890,17 @@ class _ScanScreenState extends ConsumerState<ScanScreen> {
               ),
             ),
           if (_operation == SopOperation.retrieve &&
-              _retrievePhase == _RetrievePhase.confirmReturn &&
-              _retrieveBooking != null)
+              _retrieveCandidateId != null &&
+              _retrieveRackId != null &&
+              _retrieveResolvedBooking != null)
             Positioned(
               left: 16,
               right: 16,
               bottom: 96,
-              child: _ActionSheet(
-                tone: _ActionTone.attention,
-                title: 'Bag location',
-                subtitle: 'Go to the rack and locate the bag, then confirm return.',
-                lines: [
-                  _KeyValueLine(
-                    label: 'Rack',
-                    value: _retrieveBooking!.rackId,
-                    emphasize: true,
-                  ),
-                  _KeyValueLine(label: 'Roll', value: _retrieveBooking!.candidateId),
-                ],
-                primaryLabel: 'Confirm return',
-                primaryIcon: Icons.check_circle_outline,
-                onPrimary: _confirmReturn,
-                secondaryLabel: 'Cancel',
-                onSecondary: _cancelRetrieve,
+              child: _RetrieveConfirmSheet(
+                booking: _retrieveResolvedBooking!,
+                onConfirm: _confirmReturn,
+                onCancel: _cancelRetrieve,
               ),
             ),
           Positioned(
@@ -576,6 +911,49 @@ class _ScanScreenState extends ConsumerState<ScanScreen> {
           ),
         ],
       ),
+    );
+  }
+}
+
+class _RetrieveConfirmSheet extends ConsumerWidget {
+  const _RetrieveConfirmSheet({
+    required this.booking,
+    required this.onConfirm,
+    required this.onCancel,
+  });
+
+  final Booking booking;
+  final VoidCallback onConfirm;
+  final VoidCallback onCancel;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    return FutureBuilder<bool>(
+      future: ref.read(appDbProvider).isBookingFlagged(booking.id),
+      builder: (context, snap) {
+        final flagged = snap.data == true;
+        return _ActionSheet(
+          tone: _ActionTone.attention,
+          title: 'Bag location',
+          subtitle: flagged
+              ? 'This booking is FLAGGED for admin review (duplicate candidate or rack). '
+                  'Go to the rack only if you are sure, then confirm return.'
+              : 'Go to the rack and locate the bag, then confirm return.',
+          lines: [
+            _KeyValueLine(
+              label: 'Rack',
+              value: booking.rackId,
+              emphasize: true,
+            ),
+            _KeyValueLine(label: 'Roll', value: booking.candidateId),
+          ],
+          primaryLabel: 'Confirm return',
+          primaryIcon: Icons.check_circle_outline,
+          onPrimary: onConfirm,
+          secondaryLabel: 'Cancel',
+          onSecondary: onCancel,
+        );
+      },
     );
   }
 }
@@ -599,53 +977,6 @@ class _HintStrip extends StatelessWidget {
                 style: Theme.of(context).textTheme.bodyMedium?.copyWith(
                       fontWeight: FontWeight.w600,
                     ),
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-class _ScanPill extends StatelessWidget {
-  const _ScanPill({required this.icon, required this.title, required this.value});
-  final IconData icon;
-  final String title;
-  final String value;
-
-  @override
-  Widget build(BuildContext context) {
-    final cs = Theme.of(context).colorScheme;
-    return Material(
-      elevation: 1.5,
-      borderRadius: BorderRadius.circular(16),
-      color: AppPalette.card,
-      child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
-        child: Row(
-          children: [
-            CircleAvatar(
-              radius: 18,
-              backgroundColor: AppPalette.navSelectedPill,
-              foregroundColor: cs.primary,
-              child: Icon(icon, size: 20),
-            ),
-            const SizedBox(width: 12),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Text(title, style: Theme.of(context).textTheme.labelMedium),
-                  const SizedBox(height: 2),
-                  Text(
-                    value,
-                    style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                          fontWeight: FontWeight.w800,
-                        ),
-                  ),
-                ],
               ),
             ),
           ],
