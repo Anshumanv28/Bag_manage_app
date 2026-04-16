@@ -25,15 +25,6 @@ class _SyncBannerState extends ConsumerState<SyncBanner> {
     final bookings = await db.listBookingsNeedingPush(limit: 200);
     final scanEvents = await db.listScanEventsNeedingPush(limit: 200);
 
-    // Global activity list isn't exposed; fall back to booking-scoped fetch for the
-    // booking ids we already have.
-    final acts = <BookingActivity>[];
-    for (final b in bookings) {
-      final rows = await db.listActivitiesNeedingPushForBooking(b.id);
-      acts.addAll(rows);
-      if (acts.length >= 200) break;
-    }
-
     if (!context.mounted) return;
     await showModalBottomSheet<void>(
       context: context,
@@ -55,7 +46,12 @@ class _SyncBannerState extends ConsumerState<SyncBanner> {
                   ),
                   const SizedBox(height: 8),
                   Text(
-                    'Bookings: ${bookings.length} • Activities: ${acts.length} • Scan events: ${scanEvents.length}',
+                    'Bookings: ${bookings.length} • Scan events: ${scanEvents.length}',
+                    style: Theme.of(ctx).textTheme.bodySmall,
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    'Note: scan events may auto-sync before you confirm a deposit/return, so the pending count can change during the flow.',
                     style: Theme.of(ctx).textTheme.bodySmall,
                   ),
                   const SizedBox(height: 12),
@@ -84,22 +80,6 @@ class _SyncBannerState extends ConsumerState<SyncBanner> {
                             ),
                           const Divider(),
                         ],
-                        if (acts.isNotEmpty) ...[
-                          Text(
-                            'Activities',
-                            style: Theme.of(ctx).textTheme.titleSmall,
-                          ),
-                          const SizedBox(height: 6),
-                          for (final a in acts)
-                            ListTile(
-                              dense: true,
-                              leading: const Icon(Icons.history),
-                              title: Text(a.eventType),
-                              subtitle: Text('${a.bookingId}\n${a.id}'),
-                              isThreeLine: true,
-                            ),
-                          const Divider(),
-                        ],
                         if (scanEvents.isNotEmpty) ...[
                           Text(
                             'Scan events',
@@ -118,9 +98,7 @@ class _SyncBannerState extends ConsumerState<SyncBanner> {
                               isThreeLine: true,
                             ),
                         ],
-                        if (bookings.isEmpty &&
-                            acts.isEmpty &&
-                            scanEvents.isEmpty)
+                        if (bookings.isEmpty && scanEvents.isEmpty)
                           const Padding(
                             padding: EdgeInsets.only(top: 24),
                             child: Text('No pending operations.'),
@@ -292,7 +270,9 @@ class _SyncBannerState extends ConsumerState<SyncBanner> {
                       mainAxisSize: MainAxisSize.min,
                       children: [
                         Text(
-                          pending > 0 ? 'Pending sync: $pending' : 'All synced',
+                          pending > 0
+                              ? 'Pending sync (bookings + scans): $pending'
+                              : 'All synced',
                           style: Theme.of(context).textTheme.titleSmall,
                         ),
                         if (syncing)

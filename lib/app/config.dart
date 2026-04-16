@@ -4,8 +4,8 @@ class AppConfig {
   //
   // Flip the active backend by commenting/uncommenting ONE of the lines below.
   // ---------------------------------------------------------------------------
-  static const String _activeBackendOrigin = 'http://3.109.235.112:3040';
-  // static const String _activeBackendOrigin = 'http://172.16.2.86:3040';
+  // static const String _activeBackendOrigin = 'http://3.109.235.112:3040';
+  static const String _activeBackendOrigin = 'http://172.16.2.86:3040';
 
   /// Backend origin (scheme + host + port), e.g. `http://localhost:3000`.
   ///
@@ -31,4 +31,14 @@ class AppConfig {
 
   /// Backwards-compat alias used across the app.
   static String get baseUrl => apiBaseUrl;
+
+  /// Test hook: disable refresh-token retry flow.
+  ///
+  /// Run with:
+  /// - `flutter run --dart-define=DISABLE_REFRESH=true`
+  /// - `flutter build apk --release --dart-define=DISABLE_REFRESH=true`
+  static bool get disableRefresh {
+    const raw = String.fromEnvironment('DISABLE_REFRESH');
+    return raw.toLowerCase() == 'true' || raw == '1';
+  }
 }

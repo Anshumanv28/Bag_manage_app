@@ -10,8 +10,10 @@ import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 
 import '../app/alerts.dart';
 import '../data/local/app_db.dart';
+import '../data/remote/auth_api.dart';
 import '../data/remote/sync_api.dart';
 import '../data/remote/tokens.dart';
+import '../features/auth/auth_controller.dart';
 import '../features/notifications/notifications_controller.dart';
 import 'sync_state.dart';
 
@@ -40,6 +42,40 @@ class SyncService {
   StreamSubscription<int>? _pendingSub;
   StreamSubscription? _connectivitySub;
   Timer? _autoSyncTimer;
+  DateTime? _lastMeAt;
+
+  static const Duration _meRefreshInterval = Duration(seconds: 30);
+
+  Future<void> _maybeRefreshMe() async {
+    final now = DateTime.now();
+    final last = _lastMeAt;
+    if (last != null && now.difference(last) < _meRefreshInterval) return;
+
+    final tokens = _ref.read(tokensProvider);
+    if (tokens == null || tokens.accessToken.isEmpty) return;
+
+    final authApi = _ref.read(authApiProvider);
+    try {
+      final me = await authApi.me(accessToken: tokens.accessToken);
+      _ref.read(authControllerProvider.notifier).updateOperator(me);
+      _lastMeAt = now;
+    } on DioException catch (e) {
+      if (e.response?.statusCode != 401) return;
+
+      // Access token expired: try refresh once, then apply operator from refresh response.
+      if (tokens.refreshToken.isEmpty) return;
+
+      final refreshRes = await authApi.refresh(refreshToken: tokens.refreshToken);
+      final newTokens = Tokens(
+        accessToken: refreshRes.accessToken,
+        refreshToken: refreshRes.refreshToken,
+      );
+      _ref.read(tokensProvider.notifier).setTokens(newTokens);
+      await _ref.read(tokenStoreProvider).save(newTokens);
+      _ref.read(authControllerProvider.notifier).updateOperator(refreshRes.operator);
+      _lastMeAt = now;
+    }
+  }
 
   void _start() {
     if (_started) return;
@@ -106,12 +142,18 @@ class SyncService {
     final db = _ref.read(appDbProvider);
 
     _ref.read(syncStateProvider.notifier).setSyncing(true);
+    // Keep operator lock flags reasonably fresh while syncing.
+    await _maybeRefreshMe();
     if (pendingBefore > 0) {
       _maybeNotifySyncStarted(trigger: trigger, pending: pendingBefore);
     }
     try {
       await _pushAllPendingWithRetry(trigger: trigger);
-      await pullAndMerge();
+      await pullAndMergeAndPrune();
+      await _storage.write(
+        key: _lastPullAtKey,
+        value: DateTime.now().toUtc().toIso8601String(),
+      );
       _ref.read(syncStateProvider.notifier).setError(null);
 
       final pendingAfter = await db.countPendingPush();
@@ -146,10 +188,15 @@ class SyncService {
   }
 
   Future<void> pullAndMerge() async {
+    await pullAndMergeAndPrune();
+  }
+
+  Future<void> pullAndMergeAndPrune() async {
     final db = _ref.read(appDbProvider);
     final api = _ref.read(syncApiProvider);
     String? cursor;
     const maxPages = 50;
+    final serverIds = <String>{};
 
     for (var page = 0; page < maxPages; page++) {
       final res = await api.pull(cursor: cursor, limit: 200);
@@ -160,7 +207,16 @@ class SyncService {
           final b = Map<String, Object?>.from(ch['booking'] as Map);
           final id = b['id'] as String? ?? '';
           if (id.isEmpty) continue;
+          serverIds.add(id);
           final status = (b['status'] as String?) ?? 'active';
+          final deletedAtRaw = b['deletedAt'] as String?;
+          final isDeleted =
+              status == 'deleted' ||
+              (deletedAtRaw != null && deletedAtRaw.isNotEmpty);
+          if (isDeleted) {
+            await db.deleteBookingCascade(id);
+            continue;
+          }
           final localStatus = switch (status) {
             'complete' => 'complete',
             'flagged' => 'flagged',
@@ -183,20 +239,8 @@ class SyncService {
             endedAt: endedAt,
             pushedStart: true,
             pushedFinish: status == 'complete',
+            synced: true,
             lastError: null,
-          );
-        } else if (type == 'flagged_upsert') {
-          final f = Map<String, Object?>.from(ch['flagged'] as Map);
-          final id = f['id'] as String? ?? '';
-          final bookingId = f['bookingId'] as String? ?? '';
-          if (id.isEmpty || bookingId.isEmpty) continue;
-          await db.upsertFlaggedBooking(
-            id: id,
-            bookingId: bookingId,
-            reason: (f['reason'] as String?) ?? 'candidate_duplicate_active',
-            createdAt:
-                DateTime.tryParse(f['createdAt'] as String? ?? '') ??
-                DateTime.now(),
           );
         }
       }
@@ -205,10 +249,26 @@ class SyncService {
       cursor = next;
     }
 
-    await _storage.write(
-      key: _lastPullAtKey,
-      value: DateTime.now().toUtc().toIso8601String(),
-    );
+    // Prune local bookings that were previously synced, have no pending pushes,
+    // and no longer exist on the server (server-side deletion).
+    final localBookings = await (db.select(
+      db.bookings,
+    )..where((t) => t.synced.equals(true))).get();
+
+    // If server returned no bookings but we have local synced rows, do not delete.
+    if (serverIds.isEmpty && localBookings.isNotEmpty) {
+      dev.log('[SYNC] prune skipped (empty server set)', name: 'sync');
+      return;
+    }
+
+    for (final b in localBookings) {
+      final hasPending =
+          !b.pushedStart || (b.status == 'complete' && !b.pushedFinish);
+      if (hasPending) continue;
+      if (!serverIds.contains(b.id)) {
+        await db.deleteBookingCascade(b.id);
+      }
+    }
   }
 
   Future<void> _pushAllPendingWithRetry({required SyncTrigger trigger}) async {
@@ -313,14 +373,7 @@ class SyncService {
     final deviceId = await _deviceId();
 
     final mutationIndex =
-        <
-          ({
-            String type,
-            String? bookingId,
-            String? activityId,
-            String? scanEventId,
-          })
-        >[];
+        <({String type, String? bookingId, String? scanEventId})>[];
     final mutations = <Map<String, Object?>>[];
     final opLog = <Map<String, Object?>>[];
 
@@ -353,7 +406,6 @@ class SyncService {
       mutationIndex.add((
         type: 'scan_event',
         bookingId: null,
-        activityId: null,
         scanEventId: s.id,
       ));
       opLog.add({
@@ -379,7 +431,6 @@ class SyncService {
         mutationIndex.add((
           type: 'booking_start',
           bookingId: b.id,
-          activityId: null,
           scanEventId: null,
         ));
         opLog.add({
@@ -392,50 +443,6 @@ class SyncService {
         });
       }
 
-      if (b.pushedStart) {
-        final acts = await db.listActivitiesNeedingPushForBooking(b.id);
-        for (final a in acts) {
-          Map<String, Object?>? meta;
-          if (a.metadataJson != null && a.metadataJson!.isNotEmpty) {
-            try {
-              final decoded = jsonDecode(a.metadataJson!);
-              if (decoded is Map<String, Object?>) {
-                meta = decoded;
-              } else if (decoded is Map) {
-                meta = decoded.cast<String, Object?>();
-              }
-            } catch (_) {
-              meta = null;
-            }
-          }
-          final actMap = <String, Object?>{
-            'type': 'activity_log',
-            'activityId': a.id,
-            'bookingId': a.bookingId,
-            'eventType': a.eventType,
-            'occurredAt': a.occurredAt.toIso8601String(),
-            if (a.deviceId != null) 'deviceId': a.deviceId,
-          };
-          if (meta != null) {
-            actMap['metadata'] = meta;
-          }
-          mutations.add(actMap);
-          mutationIndex.add((
-            type: 'activity_log',
-            bookingId: b.id,
-            activityId: a.id,
-            scanEventId: null,
-          ));
-          opLog.add({
-            'type': 'activity_log',
-            'activityId': a.id,
-            'bookingId': a.bookingId,
-            'eventType': a.eventType,
-            'occurredAt': a.occurredAt.toIso8601String(),
-          });
-        }
-      }
-
       if (b.status == 'complete' && !b.pushedFinish) {
         mutations.add(<String, Object?>{
           'type': 'booking_finish',
@@ -445,7 +452,6 @@ class SyncService {
         mutationIndex.add((
           type: 'booking_finish',
           bookingId: b.id,
-          activityId: null,
           scanEventId: null,
         ));
         opLog.add({
@@ -476,8 +482,6 @@ class SyncService {
           await db.markBookingStartPushed(idx.bookingId!);
         } else if (idx.type == 'booking_finish') {
           await db.markBookingFinishPushed(idx.bookingId!);
-        } else if (idx.type == 'activity_log' && idx.activityId != null) {
-          await db.markActivityPushed(idx.activityId!);
         } else if (idx.type == 'scan_event' && idx.scanEventId != null) {
           await db.markScanEventPushed(idx.scanEventId!);
         }
@@ -485,10 +489,8 @@ class SyncService {
         final err = (r['error'] as String?) ?? 'REJECTED';
         rejected += 1;
         firstErr ??= err;
-        if (idx.type != 'activity_log') {
-          final bid = idx.bookingId;
-          if (bid != null) await db.markBookingPushFailed(bid, err);
-        }
+        final bid = idx.bookingId;
+        if (bid != null) await db.markBookingPushFailed(bid, err);
       }
     }
 

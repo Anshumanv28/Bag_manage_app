@@ -188,20 +188,8 @@ class _ScanScreenState extends ConsumerState<ScanScreen> {
     required String eventType,
     Map<String, Object?>? metadata,
   }) async {
-    final session =
-        ref.read(authControllerProvider).maybeWhen(data: (s) => s, orElse: () => null);
-    final operatorId = session?.operator.phone;
-    if (operatorId == null || operatorId.isEmpty) return;
-    final db = ref.read(appDbProvider);
-    await db.insertBookingActivity(
-      id: const Uuid().v4(),
-      bookingId: bookingId,
-      operatorId: operatorId,
-      deviceId: null,
-      eventType: eventType,
-      occurredAt: DateTime.now(),
-      metadataJson: metadata == null ? null : jsonEncode(metadata),
-    );
+    // booking_activities table removed; keep scan_events + booking state only.
+    // No-op to preserve call sites.
   }
 
   Future<void> _logScanEvent({
@@ -257,26 +245,39 @@ class _ScanScreenState extends ConsumerState<ScanScreen> {
     if (_retrieveCandidateId == null && _retrieveRackId == null) {
       return 'RETRIEVE: Scan Candidate ID or Rack ID';
     }
-    if (_retrieveCandidateId == null) return 'Scan Candidate ID';
-    if (_retrieveRackId == null) return 'Scan Rack ID';
+    if (_retrieveCandidateId == null) {
+      final expected = _retrieveResolvedBooking?.candidateId;
+      return expected != null && expected.isNotEmpty
+          ? 'Scan Candidate ID (expected: $expected)'
+          : 'Scan Candidate ID';
+    }
+    if (_retrieveRackId == null) {
+      final expected = _retrieveResolvedBooking?.rackId;
+      return expected != null && expected.isNotEmpty
+          ? 'Scan Rack ID (expected: $expected)'
+          : 'Scan Rack ID';
+    }
     return 'Verify bag, then confirm return';
   }
 
   Future<void> _onDepositCandidateScanned(String candidateId) async {
     final db = ref.read(appDbProvider);
+    final flagged = await db.isCandidateFlagged(candidateId);
+    if (flagged) {
+      await _alert(
+        'This Candidate ID ($candidateId) is in a FLAGGED booking. Deposit is blocked — contact an admin.',
+        level: AppAlertLevel.error,
+      );
+      return;
+    }
+
     final dups = await db.findActiveBookingsByCandidateId(candidateId);
-    if (dups.length > 1) {
+    if (dups.isNotEmpty) {
       await _alert(
-        'Multiple active deposits already use this Candidate ID. You may continue, '
-        'but escalate to an admin — bookings will be flagged.',
-        level: AppAlertLevel.warning,
+        'An active booking already exists for Candidate ID ($candidateId). Deposit is blocked — contact an admin.',
+        level: AppAlertLevel.error,
       );
-    } else if (dups.length == 1) {
-      await _alert(
-        'An active deposit already exists for this Candidate ID. Adding another will '
-        'flag both for admin review.',
-        level: AppAlertLevel.warning,
-      );
+      return;
     }
 
     _depositFirst ??= _FirstScan.candidate;
@@ -295,17 +296,22 @@ class _ScanScreenState extends ConsumerState<ScanScreen> {
 
   Future<void> _onDepositRackScanned(String rackId) async {
     final db = ref.read(appDbProvider);
+    final flagged = await db.isRackFlagged(rackId);
+    if (flagged) {
+      await _alert(
+        'Rack ID ($rackId) is in a FLAGGED booking. Deposit is blocked — contact an admin.',
+        level: AppAlertLevel.error,
+      );
+      return;
+    }
+
     final rackDups = await db.findActiveBookingsByRackId(rackId);
-    if (rackDups.length > 1) {
+    if (rackDups.isNotEmpty) {
       await _alert(
-        'Multiple active deposits already use this rack. You may continue, but escalate to an admin.',
-        level: AppAlertLevel.warning,
+        'An active booking already exists for Rack ID ($rackId). Deposit is blocked — contact an admin.',
+        level: AppAlertLevel.error,
       );
-    } else if (rackDups.length == 1) {
-      await _alert(
-        'This rack already has an active bag. Adding another will flag bookings for admin review.',
-        level: AppAlertLevel.warning,
-      );
+      return;
     }
 
     _depositFirst ??= _FirstScan.rack;
@@ -337,11 +343,47 @@ class _ScanScreenState extends ConsumerState<ScanScreen> {
     }
 
     final db = ref.read(appDbProvider);
+    final flaggedCandidate = await db.isCandidateFlagged(roll);
+    if (flaggedCandidate) {
+      await _alert(
+        'This Candidate ID ($roll) is in a FLAGGED booking. Deposit is blocked — contact an admin.',
+        level: AppAlertLevel.error,
+      );
+      return;
+    }
+
+    final flaggedRack = await db.isRackFlagged(rack);
+    if (flaggedRack) {
+      await _alert(
+        'Rack ID ($rack) is in a FLAGGED booking. Deposit is blocked — contact an admin.',
+        level: AppAlertLevel.error,
+      );
+      return;
+    }
+
+    final candidateActive = await db.findActiveBookingsByCandidateId(roll);
+    if (candidateActive.isNotEmpty) {
+      await _alert(
+        'An active booking already exists for Candidate ID ($roll). Deposit is blocked — contact an admin.',
+        level: AppAlertLevel.error,
+      );
+      return;
+    }
+
+    final rackActive = await db.findActiveBookingsByRackId(rack);
+    if (rackActive.isNotEmpty) {
+      await _alert(
+        'An active booking already exists for Rack ID ($rack). Deposit is blocked — contact an admin.',
+        level: AppAlertLevel.error,
+      );
+      return;
+    }
+
     final now = DateTime.now();
     final bookingId = const Uuid().v4();
 
-    // Do not hard-block deposit creation even if local data is stale or indicates conflicts.
-    // Conflicts are handled server-side via flagged bookings.
+    // If we already know locally that the candidate is flagged, block deposit creation.
+    // Otherwise allow deposit creation and let the server flag conflicts if needed.
 
     await _logActivity(
       bookingId: bookingId,
@@ -443,8 +485,8 @@ class _ScanScreenState extends ConsumerState<ScanScreen> {
 
     // Require both scans for confirmation; before that we only check for ambiguity.
     if (candidate != null && rack != null) {
-      final byCandidate = await db.findActiveBookingsByCandidateId(candidate);
-      final byRack = await db.findActiveBookingsByRackId(rack);
+      final byCandidate = await db.findOpenBookingsByCandidateId(candidate);
+      final byRack = await db.findOpenBookingsByRackId(rack);
 
       final byRackIds = {for (final b in byRack) b.id};
       final intersection = byCandidate.where((b) => byRackIds.contains(b.id)).toList();
@@ -518,44 +560,127 @@ class _ScanScreenState extends ConsumerState<ScanScreen> {
 
     // Single scan stage: if ambiguous, show matches + contact admin.
     if (candidate != null) {
-      final matches = await db.findActiveBookingsByCandidateId(candidate);
+      final matches = await db.findOpenBookingsByCandidateId(candidate);
       if (matches.isEmpty && !_didAutoSyncConflict) {
         _didAutoSyncConflict = true;
         await ref.read(syncServiceProvider).syncOnce(trigger: SyncTrigger.autoTimer);
         await _attemptResolveRetrieve(lastScanned: lastScanned);
         return;
       }
+      if (matches.isEmpty) {
+        setState(() => _retrieveResolvedBooking = null);
+        return;
+      }
+      if (matches.length == 1) {
+        final flagged = await db.isBookingFlagged(matches.single.id);
+        if (flagged) {
+          await _showContactAdminMatches(
+            title: 'Flagged booking — Contact admin',
+            message:
+                'This booking is flagged as conflicting. Do not proceed. Contact an admin.',
+            matches: matches,
+            clearOnRescan: lastScanned,
+          );
+          setState(() {
+            _retrieveCandidateId = null;
+            _retrieveResolvedBooking = null;
+          });
+          return;
+        }
+        // Unique match: we can hint the expected Rack ID.
+        setState(() => _retrieveResolvedBooking = matches.single);
+        return;
+      }
       if (matches.length > 1) {
         await _showContactAdminMatches(
           title: 'Multiple matches — Contact admin',
           message:
-              'Multiple active bookings share this Candidate ID. Scan the Rack ID only after admin confirms the correct mapping.',
+              'Multiple active/flagged bookings share this Candidate ID. Scan the Rack ID only after admin confirms the correct mapping.',
           matches: matches,
           clearOnRescan: lastScanned,
         );
+        setState(() {
+          _retrieveCandidateId = null;
+          _retrieveResolvedBooking = null;
+        });
+        return;
       }
     }
     if (rack != null) {
-      final matches = await db.findActiveBookingsByRackId(rack);
+      final matches = await db.findOpenBookingsByRackId(rack);
       if (matches.isEmpty && !_didAutoSyncConflict) {
         _didAutoSyncConflict = true;
         await ref.read(syncServiceProvider).syncOnce(trigger: SyncTrigger.autoTimer);
         await _attemptResolveRetrieve(lastScanned: lastScanned);
         return;
       }
+      if (matches.isEmpty) {
+        setState(() => _retrieveResolvedBooking = null);
+        return;
+      }
+      if (matches.length == 1) {
+        final flagged = await db.isBookingFlagged(matches.single.id);
+        if (flagged) {
+          await _showContactAdminMatches(
+            title: 'Flagged booking — Contact admin',
+            message:
+                'This booking is flagged as conflicting. Do not proceed. Contact an admin.',
+            matches: matches,
+            clearOnRescan: lastScanned,
+          );
+          setState(() {
+            _retrieveRackId = null;
+            _retrieveResolvedBooking = null;
+          });
+          return;
+        }
+        // Unique match: we can hint the expected Candidate ID.
+        setState(() => _retrieveResolvedBooking = matches.single);
+        return;
+      }
       if (matches.length > 1) {
         await _showContactAdminMatches(
           title: 'Multiple matches — Contact admin',
           message:
-              'Multiple active bookings share this Rack ID. Scan the Candidate ID only after admin confirms the correct mapping.',
+              'Multiple active/flagged bookings share this Rack ID. Scan the Candidate ID only after admin confirms the correct mapping.',
           matches: matches,
           clearOnRescan: lastScanned,
         );
+        setState(() {
+          _retrieveRackId = null;
+          _retrieveResolvedBooking = null;
+        });
+        return;
       }
     }
   }
 
   Future<void> _onRetrieveCandidateScanned(String candidateId) async {
+    final db = ref.read(appDbProvider);
+    final flagged = await db.isCandidateFlagged(candidateId);
+    if (flagged) {
+      await _alert(
+        'This Candidate ID ($candidateId) is in a FLAGGED booking. Retrieve is blocked — contact an admin.',
+        level: AppAlertLevel.error,
+      );
+      return;
+    }
+    final dups = await db.findOpenBookingsByCandidateId(candidateId);
+    if (dups.length > 1) {
+      await _showContactAdminMatches(
+        title: 'Multiple matches — Contact admin',
+        message:
+            'Multiple active/flagged bookings share Candidate ID ($candidateId). Do not proceed; contact an admin.',
+        matches: dups,
+        clearOnRescan: _FirstScan.candidate,
+      );
+      setState(() {
+        _retrieveCandidateId = null;
+        _retrieveResolvedBooking = null;
+      });
+      return;
+    }
+
     _retrieveFirst ??= _FirstScan.candidate;
     await _logScanEvent(
       operation: SopOperation.retrieve,
@@ -573,6 +698,31 @@ class _ScanScreenState extends ConsumerState<ScanScreen> {
   }
 
   Future<void> _onRetrieveRackScanned(String rackId) async {
+    final db = ref.read(appDbProvider);
+    final flagged = await db.isRackFlagged(rackId);
+    if (flagged) {
+      await _alert(
+        'Rack ID ($rackId) is in a FLAGGED booking. Retrieve is blocked — contact an admin.',
+        level: AppAlertLevel.error,
+      );
+      return;
+    }
+    final dups = await db.findOpenBookingsByRackId(rackId);
+    if (dups.length > 1) {
+      await _showContactAdminMatches(
+        title: 'Multiple matches — Contact admin',
+        message:
+            'Multiple active/flagged bookings share Rack ID ($rackId). Do not proceed; contact an admin.',
+        matches: dups,
+        clearOnRescan: _FirstScan.rack,
+      );
+      setState(() {
+        _retrieveRackId = null;
+        _retrieveResolvedBooking = null;
+      });
+      return;
+    }
+
     _retrieveFirst ??= _FirstScan.rack;
     await _logScanEvent(
       operation: SopOperation.retrieve,
@@ -867,7 +1017,34 @@ class _ScanScreenState extends ConsumerState<ScanScreen> {
               ),
             ),
           ),
-          // (removed) current values strip
+          if (_operation == SopOperation.deposit &&
+              (_depositCandidateId != null || _depositRackId != null))
+            Positioned(
+              left: 16,
+              right: 16,
+              bottom: (_depositCandidateId != null && _depositRackId != null) ? 260 : 72,
+              child: _ScannedValuesCard(
+                title: 'Scanned (deposit)',
+                candidateId: _depositCandidateId,
+                rackId: _depositRackId,
+              ),
+            ),
+          if (_operation == SopOperation.retrieve &&
+              (_retrieveCandidateId != null || _retrieveRackId != null))
+            Positioned(
+              left: 16,
+              right: 16,
+              bottom: (_retrieveResolvedBooking != null &&
+                      _retrieveCandidateId != null &&
+                      _retrieveRackId != null)
+                  ? 260
+                  : 72,
+              child: _ScannedValuesCard(
+                title: 'Scanned (retrieve)',
+                candidateId: _retrieveCandidateId,
+                rackId: _retrieveRackId,
+              ),
+            ),
           if (_operation == SopOperation.deposit &&
               _depositCandidateId != null &&
               _depositRackId != null)
@@ -982,6 +1159,82 @@ class _HintStrip extends StatelessWidget {
           ],
         ),
       ),
+    );
+  }
+}
+
+class _ScannedValuesCard extends StatelessWidget {
+  const _ScannedValuesCard({
+    required this.title,
+    required this.candidateId,
+    required this.rackId,
+  });
+
+  final String title;
+  final String? candidateId;
+  final String? rackId;
+
+  @override
+  Widget build(BuildContext context) {
+    return Card(
+      color: Colors.black.withValues(alpha: 0.45),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              title,
+              style: Theme.of(context).textTheme.labelMedium?.copyWith(
+                    color: Colors.white.withValues(alpha: 0.85),
+                    fontWeight: FontWeight.w700,
+                  ),
+            ),
+            const SizedBox(height: 8),
+            _ScannedLine(label: 'Candidate', value: candidateId),
+            const SizedBox(height: 6),
+            _ScannedLine(label: 'Rack', value: rackId),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _ScannedLine extends StatelessWidget {
+  const _ScannedLine({required this.label, required this.value});
+
+  final String label;
+  final String? value;
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      children: [
+        SizedBox(
+          width: 86,
+          child: Text(
+            label,
+            style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                  color: Colors.white.withValues(alpha: 0.70),
+                  fontWeight: FontWeight.w600,
+                ),
+          ),
+        ),
+        const SizedBox(width: 10),
+        Expanded(
+          child: Text(
+            value?.trim().isNotEmpty == true ? value! : '—',
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                  color: Colors.white,
+                  fontFamily: 'monospace',
+                  fontWeight: FontWeight.w700,
+                ),
+          ),
+        ),
+      ],
     );
   }
 }

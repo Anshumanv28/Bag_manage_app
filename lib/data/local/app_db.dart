@@ -16,33 +16,8 @@ class Bookings extends Table {
   DateTimeColumn get endedAt => dateTime().nullable()();
   BoolColumn get pushedStart => boolean().withDefault(const Constant(false))();
   BoolColumn get pushedFinish => boolean().withDefault(const Constant(false))();
+  BoolColumn get synced => boolean().withDefault(const Constant(false))();
   TextColumn get lastError => text().nullable()();
-
-  @override
-  Set<Column<Object>> get primaryKey => {id};
-}
-
-/// Synced from server `/sync/pull` `flagged_upsert` (ambiguous active mappings).
-class FlaggedBookings extends Table {
-  TextColumn get id => text()();
-  TextColumn get bookingId => text()();
-  TextColumn get reason => text()();
-  DateTimeColumn get createdAt => dateTime()();
-
-  @override
-  Set<Column<Object>> get primaryKey => {id};
-}
-
-/// Local scan / confirm timeline; `activity_log` sync mutations until `pushed`.
-class BookingActivities extends Table {
-  TextColumn get id => text()();
-  TextColumn get bookingId => text()();
-  TextColumn get operatorId => text()();
-  TextColumn get deviceId => text().nullable()();
-  TextColumn get eventType => text()();
-  DateTimeColumn get occurredAt => dateTime()();
-  TextColumn get metadataJson => text().nullable()();
-  BoolColumn get pushed => boolean().withDefault(const Constant(false))();
 
   @override
   Set<Column<Object>> get primaryKey => {id};
@@ -64,12 +39,12 @@ class ScanEvents extends Table {
   Set<Column<Object>> get primaryKey => {id};
 }
 
-@DriftDatabase(tables: [Bookings, FlaggedBookings, BookingActivities, ScanEvents])
+@DriftDatabase(tables: [Bookings, ScanEvents])
 class AppDb extends _$AppDb {
   AppDb() : super(driftDatabase(name: 'baggage_management'));
 
   @override
-  int get schemaVersion => 7;
+  int get schemaVersion => 9;
 
   @override
   MigrationStrategy get migration => MigrationStrategy(
@@ -98,12 +73,17 @@ class AppDb extends _$AppDb {
               'ALTER TABLE bookings RENAME COLUMN customer_id TO candidate_id',
             );
           }
-          if (from < 6) {
-            await m.createTable(flaggedBookings);
-            await m.createTable(bookingActivities);
-          }
           if (from < 7) {
             await m.createTable(scanEvents);
+          }
+          if (from < 8) {
+            await customStatement(
+              'ALTER TABLE bookings ADD COLUMN synced INTEGER NOT NULL DEFAULT 0',
+            );
+          }
+          if (from < 9) {
+            await customStatement('DROP TABLE IF EXISTS flagged_bookings');
+            await customStatement('DROP TABLE IF EXISTS booking_activities');
           }
         },
       );
@@ -136,6 +116,14 @@ class AppDb extends _$AppDb {
         .get();
   }
 
+  Future<List<Booking>> findOpenBookingsByCandidateId(String candidateId) {
+    return (select(bookings)
+          ..where((t) => t.candidateId.equals(candidateId))
+          ..where((t) => t.status.isIn(['active', 'flagged']))
+          ..orderBy([(t) => OrderingTerm.desc(t.startedAt)]))
+        .get();
+  }
+
   Future<Booking?> findActiveBookingByRackId(String rackId) async {
     final rows = await findActiveBookingsByRackId(rackId);
     return rows.isEmpty ? null : rows.first;
@@ -149,69 +137,47 @@ class AppDb extends _$AppDb {
         .get();
   }
 
+  Future<List<Booking>> findOpenBookingsByRackId(String rackId) {
+    return (select(bookings)
+          ..where((t) => t.rackId.equals(rackId))
+          ..where((t) => t.status.isIn(['active', 'flagged']))
+          ..orderBy([(t) => OrderingTerm.desc(t.startedAt)]))
+        .get();
+  }
+
   Future<bool> isBookingFlagged(String bookingId) async {
-    final row = await (select(flaggedBookings)
-          ..where((t) => t.bookingId.equals(bookingId))
+    final row = await (select(bookings)
+          ..where((t) => t.id.equals(bookingId))
+          ..where((t) => t.status.equals('flagged'))
           ..limit(1))
         .getSingleOrNull();
     return row != null;
   }
 
-  Future<void> upsertFlaggedBooking({
-    required String id,
-    required String bookingId,
-    required String reason,
-    required DateTime createdAt,
-  }) async {
-    await into(flaggedBookings).insertOnConflictUpdate(
-      FlaggedBookingsCompanion(
-        id: Value(id),
-        bookingId: Value(bookingId),
-        reason: Value(reason),
-        createdAt: Value(createdAt),
-      ),
-    );
+  /// True if we have a locally-known flagged booking for this candidate id.
+  Future<bool> isCandidateFlagged(String candidateId) async {
+    final row = await (select(bookings)
+          ..where((t) => t.candidateId.equals(candidateId))
+          ..where((t) => t.status.equals('flagged'))
+          ..limit(1))
+        .getSingleOrNull();
+    return row != null;
   }
 
-  Future<void> clearFlagsForBooking(String bookingId) async {
-    await (delete(flaggedBookings)..where((t) => t.bookingId.equals(bookingId))).go();
+  /// True if we have a locally-known flagged booking for this rack id.
+  Future<bool> isRackFlagged(String rackId) async {
+    final row = await (select(bookings)
+          ..where((t) => t.rackId.equals(rackId))
+          ..where((t) => t.status.equals('flagged'))
+          ..limit(1))
+        .getSingleOrNull();
+    return row != null;
   }
 
-  Future<void> insertBookingActivity({
-    required String id,
-    required String bookingId,
-    required String operatorId,
-    String? deviceId,
-    required String eventType,
-    required DateTime occurredAt,
-    String? metadataJson,
-  }) async {
-    await into(bookingActivities).insert(
-      BookingActivitiesCompanion.insert(
-        id: id,
-        bookingId: bookingId,
-        operatorId: operatorId,
-        deviceId: Value(deviceId),
-        eventType: eventType,
-        occurredAt: occurredAt,
-        metadataJson: Value(metadataJson),
-        pushed: const Value(false),
-      ),
-    );
-  }
-
-  Future<List<BookingActivity>> listActivitiesNeedingPushForBooking(String bookingId) {
-    return (select(bookingActivities)
-          ..where((t) => t.bookingId.equals(bookingId))
-          ..where((t) => t.pushed.equals(false))
-          ..orderBy([(t) => OrderingTerm.asc(t.occurredAt)]))
-        .get();
-  }
-
-  Future<void> markActivityPushed(String activityId) async {
-    await (update(bookingActivities)..where((t) => t.id.equals(activityId))).write(
-      const BookingActivitiesCompanion(pushed: Value(true)),
-    );
+  Future<void> deleteBookingCascade(String bookingId) async {
+    await transaction(() async {
+      await deleteBooking(bookingId);
+    });
   }
 
   Future<void> insertScanEvent({
@@ -283,6 +249,7 @@ class AppDb extends _$AppDb {
     DateTime? endedAt,
     bool? pushedStart,
     bool? pushedFinish,
+    bool? synced,
     String? lastError,
   }) async {
     await into(bookings).insertOnConflictUpdate(
@@ -296,6 +263,7 @@ class AppDb extends _$AppDb {
         endedAt: Value(endedAt),
         pushedStart: pushedStart == null ? const Value.absent() : Value(pushedStart),
         pushedFinish: pushedFinish == null ? const Value.absent() : Value(pushedFinish),
+        synced: synced == null ? const Value.absent() : Value(synced),
         lastError: lastError == null ? const Value.absent() : Value(lastError),
       ),
     );
@@ -316,12 +284,6 @@ class AppDb extends _$AppDb {
     return rows.length;
   }
 
-  Future<int> _countActivityPushPending() async {
-    final q = select(bookingActivities)..where((t) => t.pushed.equals(false));
-    final rows = await q.get();
-    return rows.length;
-  }
-
   Future<int> _countScanEventPushPending() async {
     final q = select(scanEvents)..where((t) => t.pushed.equals(false));
     final rows = await q.get();
@@ -330,9 +292,8 @@ class AppDb extends _$AppDb {
 
   Future<int> countPendingPush() async {
     final b = await _countBookingPushPending();
-    final a = await _countActivityPushPending();
     final s = await _countScanEventPushPending();
-    return b + a + s;
+    return b + s;
   }
 
   Stream<int> watchPendingPushCount() {
@@ -349,12 +310,10 @@ class AppDb extends _$AppDb {
 
       unawaited(emit());
       final sub1 = select(bookings).watch().listen((_) => emit());
-      final sub2 = select(bookingActivities).watch().listen((_) => emit());
-      final sub3 = select(scanEvents).watch().listen((_) => emit());
+      final sub2 = select(scanEvents).watch().listen((_) => emit());
       controller.onCancel = () {
         sub1.cancel();
         sub2.cancel();
-        sub3.cancel();
       };
     });
   }
@@ -371,25 +330,8 @@ class AppDb extends _$AppDb {
     return q.get();
   }
 
-  /// Bookings that need start/finish push, plus any booking with unpushed activity rows.
-  Future<List<Booking>> listBookingsForOutboxPush({int limit = 200}) async {
-    final needPush = await listBookingsNeedingPush(limit: limit);
-    final byId = {for (final b in needPush) b.id: b};
-    final unpushedAct = await (select(bookingActivities)
-          ..where((t) => t.pushed.equals(false)))
-        .get();
-    for (final a in unpushedAct) {
-      if (byId.containsKey(a.bookingId)) continue;
-      final row = await (select(bookings)..where((t) => t.id.equals(a.bookingId)))
-          .getSingleOrNull();
-      if (row != null) {
-        byId[row.id] = row;
-      }
-    }
-    final merged = byId.values.toList()
-      ..sort((a, b) => a.startedAt.compareTo(b.startedAt));
-    if (merged.length <= limit) return merged;
-    return merged.take(limit).toList();
+  Future<List<Booking>> listBookingsForOutboxPush({int limit = 200}) {
+    return listBookingsNeedingPush(limit: limit);
   }
 
   Future<Booking?> getBookingById(String id) {

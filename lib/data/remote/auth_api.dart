@@ -4,7 +4,6 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../app/config.dart';
 import '../../shared/models/operator.dart';
 import 'network_logger.dart';
-import 'tokens.dart';
 
 final authDioProvider = Provider<Dio>((ref) {
   final dio = Dio(
@@ -24,6 +23,18 @@ final authApiProvider = Provider<AuthApi>((ref) {
 
 class LoginResponse {
   const LoginResponse({
+    required this.accessToken,
+    required this.refreshToken,
+    required this.operator,
+  });
+
+  final String accessToken;
+  final String refreshToken;
+  final Operator operator;
+}
+
+class RefreshResponse {
+  const RefreshResponse({
     required this.accessToken,
     required this.refreshToken,
     required this.operator,
@@ -59,15 +70,18 @@ class AuthApi {
   }
 
   /// Postman/backend expect refresh token in Authorization header.
-  Future<Tokens> refresh({required String refreshToken}) async {
+  Future<RefreshResponse> refresh({required String refreshToken}) async {
     final res = await _dio.post<Map<String, Object?>>(
       '/auth/refresh',
       options: Options(headers: {'Authorization': 'Bearer $refreshToken'}),
     );
     final data = res.data ?? const <String, Object?>{};
-    return Tokens(
+    return RefreshResponse(
       accessToken: (data['accessToken'] as String?) ?? '',
       refreshToken: (data['refreshToken'] as String?) ?? '',
+      operator: Operator.fromJson(
+        (data['operator'] as Map?)?.cast<String, Object?>() ?? const {},
+      ),
     );
   }
 

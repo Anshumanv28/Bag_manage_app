@@ -2,6 +2,8 @@ import 'package:dio/dio.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../app/config.dart';
+import '../../features/auth/auth_controller.dart';
+import '../../shared/models/operator.dart';
 import 'auth_api.dart';
 import 'network_logger.dart';
 import 'tokens.dart';
@@ -23,6 +25,9 @@ final apiClientProvider = Provider<ApiClient>((ref) {
     },
     refresh: (refreshToken) =>
         ref.read(authApiProvider).refresh(refreshToken: refreshToken),
+    setOperator: (op) =>
+        ref.read(authControllerProvider.notifier).updateOperator(op),
+    logout: () => ref.read(authControllerProvider.notifier).logout(),
   );
 });
 
@@ -32,17 +37,21 @@ class ApiClient {
     required Tokens? Function() readTokens,
     required Future<void> Function(Tokens tokens) persistTokens,
     required Future<void> Function() clearTokens,
-    required Future<Tokens> Function(String refreshToken) refresh,
-  })  : _readTokens = readTokens,
-        _persistTokens = persistTokens,
-        _clearTokens = clearTokens,
-        dio = Dio(
-          BaseOptions(
-            baseUrl: baseUrl,
-            connectTimeout: const Duration(seconds: 10),
-            receiveTimeout: const Duration(seconds: 20),
-          ),
-        ) {
+    required Future<RefreshResponse> Function(String refreshToken) refresh,
+    required void Function(Operator operator) setOperator,
+    required Future<void> Function() logout,
+  }) : _readTokens = readTokens,
+       _persistTokens = persistTokens,
+       _clearTokens = clearTokens,
+       _setOperator = setOperator,
+       _logout = logout,
+       dio = Dio(
+         BaseOptions(
+           baseUrl: baseUrl,
+           connectTimeout: const Duration(seconds: 10),
+           receiveTimeout: const Duration(seconds: 20),
+         ),
+       ) {
     dio.interceptors.add(DebugNetworkLogger(tag: 'api'));
 
     dio.interceptors.add(
@@ -59,20 +68,55 @@ class ApiClient {
         onError: (err, handler) async {
           final status = err.response?.statusCode;
           final alreadyRetried = err.requestOptions.extra['retried'] == true;
-          if (status != 401 || alreadyRetried) {
+          if (status != 401) {
+            handler.next(err);
+            return;
+          }
+
+          // Avoid refresh loops for auth endpoints.
+          final path = err.requestOptions.path;
+          final isAuthEndpoint = path.startsWith('/auth/');
+
+          if (AppConfig.disableRefresh) {
+            await _clearTokens();
+            await _logout();
+            handler.next(err);
+            return;
+          }
+
+          // If we already retried once and still got 401, force logout.
+          if (alreadyRetried) {
+            await _clearTokens();
+            await _logout();
             handler.next(err);
             return;
           }
 
           final tokens = _readTokens();
           if (tokens == null || tokens.refreshToken.isEmpty) {
+            // No way to recover: clear and logout.
+            await _clearTokens();
+            await _logout();
+            handler.next(err);
+            return;
+          }
+
+          if (isAuthEndpoint) {
+            // If auth endpoints themselves return 401, don't attempt refresh: logout.
+            await _clearTokens();
+            await _logout();
             handler.next(err);
             return;
           }
 
           try {
-            final newTokens = await refresh(tokens.refreshToken);
+            final refreshRes = await refresh(tokens.refreshToken);
+            final newTokens = Tokens(
+              accessToken: refreshRes.accessToken,
+              refreshToken: refreshRes.refreshToken,
+            );
             await _persistTokens(newTokens);
+            _setOperator(refreshRes.operator);
 
             final req = err.requestOptions;
             req.extra['retried'] = true;
@@ -82,6 +126,7 @@ class ApiClient {
             handler.resolve(res);
           } catch (_) {
             await _clearTokens();
+            await _logout();
             handler.next(err);
           }
         },
@@ -93,5 +138,6 @@ class ApiClient {
   final Tokens? Function() _readTokens;
   final Future<void> Function(Tokens tokens) _persistTokens;
   final Future<void> Function() _clearTokens;
+  final void Function(Operator operator) _setOperator;
+  final Future<void> Function() _logout;
 }
-

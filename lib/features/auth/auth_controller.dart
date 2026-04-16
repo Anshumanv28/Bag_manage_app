@@ -31,6 +31,12 @@ class AuthController extends AsyncNotifier<AuthSession?> {
     }
   }
 
+  void updateOperator(Operator operator) {
+    final current = state.asData?.value;
+    if (current == null) return;
+    state = AsyncData(AuthSession(operator: operator));
+  }
+
   Future<void> login({required String phone, required String password}) async {
     final authApi = ref.read(authApiProvider);
     final tokenStore = ref.read(tokenStoreProvider);

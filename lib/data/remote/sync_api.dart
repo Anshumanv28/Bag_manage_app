@@ -2,7 +2,9 @@ import 'package:dio/dio.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../app/config.dart';
+import '../../features/auth/auth_controller.dart';
 import 'network_logger.dart';
+import 'auth_api.dart';
 import 'tokens.dart';
 
 final syncApiProvider = Provider<SyncApi>((ref) {
@@ -25,6 +27,60 @@ final syncApiProvider = Provider<SyncApi>((ref) {
           options.headers.remove('Authorization');
         }
         handler.next(options);
+      },
+      onError: (err, handler) async {
+        final status = err.response?.statusCode;
+        if (status != 401) {
+          handler.next(err);
+          return;
+        }
+
+        if (AppConfig.disableRefresh) {
+          await ref.read(authControllerProvider.notifier).logout();
+          handler.next(err);
+          return;
+        }
+
+        final alreadyRetried = err.requestOptions.extra['retried'] == true;
+        if (alreadyRetried) {
+          // If we still get 401 after retry, force logout.
+          await ref.read(tokenStoreProvider).clear();
+          ref.read(tokensProvider.notifier).clear();
+          await ref.read(authControllerProvider.notifier).logout();
+          handler.next(err);
+          return;
+        }
+
+        final tokens = ref.read(tokensProvider);
+        if (tokens == null || tokens.refreshToken.isEmpty) {
+          await ref.read(authControllerProvider.notifier).logout();
+          handler.next(err);
+          return;
+        }
+
+        try {
+          final refreshRes = await ref
+              .read(authApiProvider)
+              .refresh(refreshToken: tokens.refreshToken);
+          final newTokens = Tokens(
+            accessToken: refreshRes.accessToken,
+            refreshToken: refreshRes.refreshToken,
+          );
+          await ref.read(tokenStoreProvider).save(newTokens);
+          ref.read(tokensProvider.notifier).setTokens(newTokens);
+          ref
+              .read(authControllerProvider.notifier)
+              .updateOperator(refreshRes.operator);
+
+          final req = err.requestOptions;
+          req.extra['retried'] = true;
+          req.headers['Authorization'] = 'Bearer ${newTokens.accessToken}';
+          final res = await dio.fetch(req);
+          handler.resolve(res);
+        } catch (_) {
+          await ref.read(authControllerProvider.notifier).logout();
+          handler.next(err);
+        }
       },
     ),
   );
@@ -61,7 +117,8 @@ class SyncApi {
       data: payload,
     );
     final data = res.data ?? const <String, Object?>{};
-    final changes = (data['changes'] as List?)
+    final changes =
+        (data['changes'] as List?)
             ?.whereType<Map>()
             .map((m) => m.cast<String, Object?>())
             .toList() ??
@@ -81,7 +138,8 @@ class SyncApi {
       data: {'deviceId': deviceId, 'mutations': mutations},
     );
     final data = res.data ?? const <String, Object?>{};
-    final results = (data['results'] as List?)
+    final results =
+        (data['results'] as List?)
             ?.whereType<Map>()
             .map((m) => m.cast<String, Object?>())
             .toList() ??
@@ -92,4 +150,3 @@ class SyncApi {
     );
   }
 }
-
