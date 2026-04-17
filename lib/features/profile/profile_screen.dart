@@ -12,11 +12,30 @@ final operatorSyncLatestProvider =
   return api.latestByOperator();
 });
 
-class ProfileScreen extends ConsumerWidget {
+class ProfileScreen extends ConsumerStatefulWidget {
   const ProfileScreen({super.key});
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  ConsumerState<ProfileScreen> createState() => _ProfileScreenState();
+}
+
+class _ProfileScreenState extends ConsumerState<ProfileScreen> {
+  bool _refreshingSyncStatus = false;
+
+  Future<void> _refreshOperatorSyncStatus() async {
+    if (_refreshingSyncStatus) return;
+    setState(() => _refreshingSyncStatus = true);
+    try {
+      // Force a refetch and wait so the UI can show a loading indicator.
+      final f = ref.refresh(operatorSyncLatestProvider.future);
+      await f;
+    } finally {
+      if (mounted) setState(() => _refreshingSyncStatus = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
     final session = ref.watch(authControllerProvider).maybeWhen(
           data: (v) => v,
           orElse: () => null,
@@ -26,6 +45,7 @@ class ProfileScreen extends ConsumerWidget {
     final name = session?.operator.name ?? '';
     final initials = _initialsFor(name.isEmpty ? 'Operator' : name);
     final syncLatest = ref.watch(operatorSyncLatestProvider);
+    final showSyncLoading = _refreshingSyncStatus || syncLatest.isLoading;
 
     return Scaffold(
       appBar: AppBar(title: const Text('Profile')),
@@ -94,12 +114,23 @@ class ProfileScreen extends ConsumerWidget {
                         ),
                         IconButton(
                           tooltip: 'Refresh',
-                          onPressed: () => ref.invalidate(operatorSyncLatestProvider),
-                          icon: const Icon(Icons.refresh),
+                          onPressed: _refreshOperatorSyncStatus,
+                          icon: showSyncLoading
+                              ? const SizedBox(
+                                  width: 18,
+                                  height: 18,
+                                  child: CircularProgressIndicator(strokeWidth: 2),
+                                )
+                              : const Icon(Icons.refresh),
                         ),
                       ],
                     ),
                     const SizedBox(height: 8),
+                    if (showSyncLoading)
+                      const Padding(
+                        padding: EdgeInsets.symmetric(vertical: 8),
+                        child: LinearProgressIndicator(minHeight: 2),
+                      ),
                     syncLatest.when(
                       data: (res) {
                         final rows = res.rows;
@@ -145,10 +176,7 @@ class ProfileScreen extends ConsumerWidget {
                           }).toList(),
                         );
                       },
-                      loading: () => const Padding(
-                        padding: EdgeInsets.symmetric(vertical: 8),
-                        child: LinearProgressIndicator(minHeight: 2),
-                      ),
+                      loading: () => const SizedBox.shrink(),
                       error: (_, _) => Text(
                         'Failed to load operator sync status.',
                         style: Theme.of(context).textTheme.bodyMedium?.copyWith(

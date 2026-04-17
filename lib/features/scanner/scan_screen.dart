@@ -767,6 +767,21 @@ class _ScanScreenState extends ConsumerState<ScanScreen> {
           displayRack: dispRack,
         );
       } else {
+        // Track rejected scans (duplicates/flagged/mismatch/no-booking/etc).
+        // Intentionally DO NOT track wrong-format scans to avoid noise.
+        unawaited(
+          _logScanEvent(
+            operation: _operation,
+            eventType: 'scan_rejected',
+            candidateId: candidateId,
+            rackId: rackId,
+            metadata: <String, Object?>{
+              'reason': result.rejectMessage ?? 'Scan not accepted',
+              if (candidateId != null) 'scanned': 'candidate',
+              if (rackId != null) 'scanned': 'rack',
+            },
+          ),
+        );
         _flashScanFeedback(
           success: false,
           message: result.rejectMessage ?? 'Scan not accepted',

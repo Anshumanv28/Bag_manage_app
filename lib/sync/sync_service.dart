@@ -67,14 +67,18 @@ class SyncService {
       // Access token expired: try refresh once, then apply operator from refresh response.
       if (tokens.refreshToken.isEmpty) return;
 
-      final refreshRes = await authApi.refresh(refreshToken: tokens.refreshToken);
+      final refreshRes = await authApi.refresh(
+        refreshToken: tokens.refreshToken,
+      );
       final newTokens = Tokens(
         accessToken: refreshRes.accessToken,
         refreshToken: refreshRes.refreshToken,
       );
       _ref.read(tokensProvider.notifier).setTokens(newTokens);
       await _ref.read(tokenStoreProvider).save(newTokens);
-      _ref.read(authControllerProvider.notifier).updateOperator(refreshRes.operator);
+      _ref
+          .read(authControllerProvider.notifier)
+          .updateOperator(refreshRes.operator);
       _lastMeAt = now;
     }
   }
@@ -318,7 +322,9 @@ class SyncService {
               TextButton(
                 onPressed: () {
                   Navigator.of(ctx).pop();
-                  unawaited(_ref.read(authControllerProvider.notifier).logout());
+                  unawaited(
+                    _ref.read(authControllerProvider.notifier).logout(),
+                  );
                 },
                 child: const Text('Sign out'),
               ),

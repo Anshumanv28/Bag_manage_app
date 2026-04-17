@@ -3,6 +3,20 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'api_client.dart';
 
+DateTime? _parseBackendUtc(String? raw) {
+  if (raw == null) return null;
+  final t = raw.trim();
+  if (t.isEmpty) return null;
+
+  final hasZone = RegExp(r'(Z|z|[+-]\d{2}(:?\d{2})?|[+-]\d{4})$').hasMatch(t);
+  if (hasZone) return DateTime.tryParse(t);
+
+  // Backend sometimes returns `::text` timestamps without zone (e.g. "2026-04-17 06:13:05.642").
+  // Treat these naive timestamps as UTC to avoid showing "5h ago" in IST.
+  final normalized = t.contains(' ') ? t.replaceFirst(' ', 'T') : t;
+  return DateTime.tryParse('${normalized}Z');
+}
+
 final syncStatusApiProvider = Provider<SyncStatusApi>((ref) {
   final client = ref.read(apiClientProvider);
   return SyncStatusApi(client.dio);
@@ -26,7 +40,7 @@ class OperatorSyncStatusRow {
     return OperatorSyncStatusRow(
       operatorId: (json['operatorId'] as String?) ?? '',
       name: (json['name'] as String?) ?? '',
-      lastSyncAt: raw == null ? null : DateTime.tryParse(raw),
+      lastSyncAt: _parseBackendUtc(raw),
       deviceId: json['deviceId'] as String?,
     );
   }
