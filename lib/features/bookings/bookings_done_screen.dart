@@ -12,40 +12,40 @@ class BookingsDoneScreen extends ConsumerWidget {
     await Future<void>.value();
   }
 
-  Future<void> _confirmDeleteBooking(
-    BuildContext context, {
-    required AppDb db,
-    required Booking booking,
-  }) async {
-    final ok = await showDialog<bool>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('Delete local record?'),
-        content: Text(
-          'This will delete this booking and related local rows (activities/flags) from this device only.\n\n'
-          'Roll: ${booking.candidateId}\n'
-          'Rack: ${booking.rackId}\n'
-          'ID: ${booking.id}',
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(ctx).pop(false),
-            child: const Text('Cancel'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.of(ctx).pop(true),
-            child: const Text('Delete'),
-          ),
-        ],
-      ),
-    );
-    if (ok != true) return;
-    await db.deleteBookingCascade(booking.id);
-    if (!context.mounted) return;
-    ScaffoldMessenger.of(
-      context,
-    ).showSnackBar(const SnackBar(content: Text('Deleted local booking')));
-  }
+  // Future<void> _confirmDeleteBooking(
+  //   BuildContext context, {
+  //   required AppDb db,
+  //   required Booking booking,
+  // }) async {
+  //   final ok = await showDialog<bool>(
+  //     context: context,
+  //     builder: (ctx) => AlertDialog(
+  //       title: const Text('Delete local record?'),
+  //       content: Text(
+  //         'This will delete this booking and related local rows (activities/flags) from this device only.\n\n'
+  //         'Roll: ${booking.candidateId}\n'
+  //         'Rack: ${booking.rackId}\n'
+  //         'ID: ${booking.id}',
+  //       ),
+  //       actions: [
+  //         TextButton(
+  //           onPressed: () => Navigator.of(ctx).pop(false),
+  //           child: const Text('Cancel'),
+  //         ),
+  //         FilledButton(
+  //           onPressed: () => Navigator.of(ctx).pop(true),
+  //           child: const Text('Delete'),
+  //         ),
+  //       ],
+  //     ),
+  //   );
+  //   if (ok != true) return;
+  //   await db.deleteBookingCascade(booking.id);
+  //   if (!context.mounted) return;
+  //   ScaffoldMessenger.of(
+  //     context,
+  //   ).showSnackBar(const SnackBar(content: Text('Deleted local booking')));
+  // }
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -80,15 +80,6 @@ class BookingsDoneScreen extends ConsumerWidget {
                         leading: const Icon(Icons.inventory_2_outlined),
                         title: Text('Roll: ${b.candidateId}'),
                         subtitle: Text('Rack: ${b.rackId}'),
-                        trailing: IconButton(
-                          tooltip: 'Delete local',
-                          icon: const Icon(Icons.delete_outline),
-                          onPressed: () => _confirmDeleteBooking(
-                            context,
-                            db: db,
-                            booking: b,
-                          ),
-                        ),
                       ),
                     ),
                     const SizedBox(height: 8),
@@ -126,15 +117,6 @@ class BookingsDoneScreen extends ConsumerWidget {
                           'Rack: ${b.rackId} • Retrieved'
                           '${b.endedAt == null ? '' : ' • ${b.endedAt!.toLocal()}'}',
                         ),
-                        trailing: IconButton(
-                          tooltip: 'Delete local',
-                          icon: const Icon(Icons.delete_outline),
-                          onPressed: () => _confirmDeleteBooking(
-                            context,
-                            db: db,
-                            booking: b,
-                          ),
-                        ),
                       ),
                     ),
                     const SizedBox(height: 8),
@@ -169,15 +151,6 @@ class BookingsDoneScreen extends ConsumerWidget {
                         ),
                         title: Text('Roll: ${b.candidateId}'),
                         subtitle: Text('Rack: ${b.rackId} • Flagged'),
-                        trailing: IconButton(
-                          tooltip: 'Delete local',
-                          icon: const Icon(Icons.delete_outline),
-                          onPressed: () => _confirmDeleteBooking(
-                            context,
-                            db: db,
-                            booking: b,
-                          ),
-                        ),
                       ),
                     ),
                     const SizedBox(height: 8),
