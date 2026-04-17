@@ -5,6 +5,7 @@ import '../features/auth/auth_controller.dart';
 import '../features/auth/login_screen.dart';
 import '../features/home/home_screen.dart';
 import '../sync/sync_service.dart';
+import 'nav.dart';
 import 'theme.dart';
 
 class App extends ConsumerWidget {
@@ -19,6 +20,7 @@ class App extends ConsumerWidget {
     final current = session.maybeWhen(data: (s) => s, orElse: () => null);
 
     return MaterialApp(
+      navigatorKey: appNavigatorKey,
       title: 'Baggage Management',
       theme: appTheme(),
       home: (session.isLoading && !session.hasValue)

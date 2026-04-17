@@ -5,6 +5,7 @@ import 'dart:io' show Platform;
 import 'package:camera/camera.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:google_mlkit_barcode_scanning/google_mlkit_barcode_scanning.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:uuid/uuid.dart';
@@ -17,6 +18,8 @@ import '../../data/remote/health_api.dart';
 import '../../sync/sync_service.dart';
 import '../../sync/sync_state.dart';
 import 'widgets/sop_progress_header.dart';
+
+typedef _ScanHandlerResult = ({bool accepted, String? rejectMessage});
 
 /// SOP: Deposit (admit + rack + confirm) vs Retrieve (admit only + show rack + confirm return).
 enum SopOperation { deposit, retrieve }
@@ -53,6 +56,16 @@ class _ScanScreenState extends ConsumerState<ScanScreen> {
   Timer? _pendingTimer;
   DateTime? _cooldownUntil;
   bool _didAutoSyncConflict = false;
+  int _feedbackSeq = 0;
+  ({
+    bool success,
+    String? message,
+    int seq,
+    String? displayCandidate,
+    String? displayRack,
+  })? _feedbackFlash;
+  /// After each decoded barcode, pause MLKit until the operator taps to continue (avoids repeat reads).
+  bool _scanAwaitingTap = false;
 
   int _activeStepIndex() {
     if (_operation == SopOperation.deposit) {
@@ -159,28 +172,8 @@ class _ScanScreenState extends ConsumerState<ScanScreen> {
     _retrieveResolvedBooking = null;
     _cooldownUntil = null;
     _didAutoSyncConflict = false;
-  }
-
-  Future<void> _showContactOtherOperator(String phone) async {
-    if (!mounted) return;
-    await showDialog<void>(
-      context: context,
-      barrierDismissible: false,
-      builder: (ctx) {
-        return AlertDialog(
-          title: const Text('Contact other operator'),
-          content: Text(
-            'This booking was created by operator $phone.\n\nAsk them to Sync, then press Refresh here.',
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.of(ctx).pop(),
-              child: const Text('OK'),
-            ),
-          ],
-        );
-      },
-    );
+    _scanAwaitingTap = false;
+    _feedbackFlash = null;
   }
 
   Future<void> _logActivity({
@@ -260,24 +253,22 @@ class _ScanScreenState extends ConsumerState<ScanScreen> {
     return 'Verify bag, then confirm return';
   }
 
-  Future<void> _onDepositCandidateScanned(String candidateId) async {
+  Future<_ScanHandlerResult> _onDepositCandidateScanned(String candidateId) async {
     final db = ref.read(appDbProvider);
     final flagged = await db.isCandidateFlagged(candidateId);
     if (flagged) {
-      await _alert(
-        'This Candidate ID ($candidateId) is in a FLAGGED booking. Deposit is blocked — contact an admin.',
-        level: AppAlertLevel.error,
+      return (
+        accepted: false,
+        rejectMessage: 'Booking flagged',
       );
-      return;
     }
 
     final dups = await db.findActiveBookingsByCandidateId(candidateId);
     if (dups.isNotEmpty) {
-      await _alert(
-        'An active booking already exists for Candidate ID ($candidateId). Deposit is blocked — contact an admin.',
-        level: AppAlertLevel.error,
+      return (
+        accepted: false,
+        rejectMessage: 'Candidate already deposited',
       );
-      return;
     }
 
     _depositFirst ??= _FirstScan.candidate;
@@ -292,26 +283,25 @@ class _ScanScreenState extends ConsumerState<ScanScreen> {
       _depositCandidateId = candidateId;
     });
     _cooldownUntil = DateTime.now().add(const Duration(milliseconds: 1200));
+    return (accepted: true, rejectMessage: null);
   }
 
-  Future<void> _onDepositRackScanned(String rackId) async {
+  Future<_ScanHandlerResult> _onDepositRackScanned(String rackId) async {
     final db = ref.read(appDbProvider);
     final flagged = await db.isRackFlagged(rackId);
     if (flagged) {
-      await _alert(
-        'Rack ID ($rackId) is in a FLAGGED booking. Deposit is blocked — contact an admin.',
-        level: AppAlertLevel.error,
+      return (
+        accepted: false,
+        rejectMessage: 'Booking flagged',
       );
-      return;
     }
 
     final rackDups = await db.findActiveBookingsByRackId(rackId);
     if (rackDups.isNotEmpty) {
-      await _alert(
-        'An active booking already exists for Rack ID ($rackId). Deposit is blocked — contact an admin.',
-        level: AppAlertLevel.error,
+      return (
+        accepted: false,
+        rejectMessage: 'Rack already in use',
       );
-      return;
     }
 
     _depositFirst ??= _FirstScan.rack;
@@ -326,6 +316,7 @@ class _ScanScreenState extends ConsumerState<ScanScreen> {
       _depositRackId = rackId;
     });
     _cooldownUntil = DateTime.now().add(const Duration(milliseconds: 800));
+    return (accepted: true, rejectMessage: null);
   }
 
   Future<void> _confirmDeposit() async {
@@ -413,77 +404,11 @@ class _ScanScreenState extends ConsumerState<ScanScreen> {
     _cooldownUntil = DateTime.now().add(const Duration(milliseconds: 1200));
   }
 
-  Future<void> _showContactAdminMatches({
-    required String title,
-    required String message,
-    required List<Booking> matches,
-    required _FirstScan clearOnRescan,
-  }) async {
-    final db = ref.read(appDbProvider);
-    final flagged = <String, bool>{};
-    for (final b in matches) {
-      flagged[b.id] = await db.isBookingFlagged(b.id);
-    }
-    if (!mounted) return;
-    await showDialog<void>(
-      context: context,
-      barrierDismissible: false,
-      builder: (ctx) {
-        return AlertDialog(
-          title: Text(title),
-          content: SingleChildScrollView(
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(message, style: Theme.of(ctx).textTheme.bodySmall),
-                const SizedBox(height: 12),
-                ...matches.map((b) {
-                  final f = flagged[b.id] == true;
-                  return ListTile(
-                    dense: true,
-                    leading: Icon(
-                      f ? Icons.flag_outlined : Icons.luggage_outlined,
-                      color: f ? Theme.of(ctx).colorScheme.error : null,
-                    ),
-                    title: Text('Rack ${b.rackId} · ${b.candidateId}'),
-                    subtitle: Text('${b.startedAt.toLocal()}${f ? ' · FLAGGED' : ''}'),
-                  );
-                }),
-              ],
-            ),
-          ),
-          actions: [
-            TextButton(
-              onPressed: () {
-                setState(() {
-                  if (clearOnRescan == _FirstScan.candidate) {
-                    _retrieveCandidateId = null;
-                  } else {
-                    _retrieveRackId = null;
-                  }
-                  _retrieveResolvedBooking = null;
-                });
-                Navigator.pop(ctx);
-              },
-              child: const Text('Rescan'),
-            ),
-            TextButton(
-              onPressed: () => Navigator.pop(ctx),
-              child: const Text('Contact admin'),
-            ),
-          ],
-        );
-      },
-    );
-  }
-
-  Future<void> _attemptResolveRetrieve({required _FirstScan lastScanned}) async {
+  Future<String?> _attemptResolveRetrieve({required _FirstScan lastScanned}) async {
     final candidate = _retrieveCandidateId;
     final rack = _retrieveRackId;
     final db = ref.read(appDbProvider);
 
-    // Require both scans for confirmation; before that we only check for ambiguity.
     if (candidate != null && rack != null) {
       final byCandidate = await db.findOpenBookingsByCandidateId(candidate);
       final byRack = await db.findOpenBookingsByRackId(rack);
@@ -492,31 +417,27 @@ class _ScanScreenState extends ConsumerState<ScanScreen> {
       final intersection = byCandidate.where((b) => byRackIds.contains(b.id)).toList();
 
       if (intersection.isEmpty) {
-        // Stale-data UX: auto-sync once, then retry.
         if (!_didAutoSyncConflict) {
           _didAutoSyncConflict = true;
           await ref.read(syncServiceProvider).syncOnce(trigger: SyncTrigger.autoTimer);
-          await _attemptResolveRetrieve(lastScanned: lastScanned);
-          return;
+          return _attemptResolveRetrieve(lastScanned: lastScanned);
         }
 
-        // Conflict UX: only prompt to contact the booking's operator when the
-        // local DB indicates a conflict/flagged booking (not just because
-        // deposit/retrieve operators can differ).
         for (final b in [...byCandidate, ...byRack]) {
           final flagged = await db.isBookingFlagged(b.id);
           if (flagged) {
-            await _alert(
-              'Conflicting booking detected (flagged). Escalate to admin.',
-              level: AppAlertLevel.warning,
-            );
-            await _showContactOtherOperator(b.operatorId);
-            break;
+            setState(() {
+              if (lastScanned == _FirstScan.candidate) {
+                _retrieveCandidateId = null;
+              } else {
+                _retrieveRackId = null;
+              }
+              _retrieveResolvedBooking = null;
+            });
+            return 'Booking flagged';
           }
         }
 
-        await _alert('No active booking matches BOTH Candidate ID and Rack ID. Contact admin.',
-            level: AppAlertLevel.warning);
         setState(() {
           if (lastScanned == _FirstScan.candidate) {
             _retrieveCandidateId = null;
@@ -525,85 +446,54 @@ class _ScanScreenState extends ConsumerState<ScanScreen> {
           }
           _retrieveResolvedBooking = null;
         });
-        return;
+        return 'Roll and rack don\'t match';
       }
       if (intersection.length > 1) {
-        await _showContactAdminMatches(
-          title: 'Multiple matches — Contact admin',
-          message:
-              'Multiple active bookings match these scans. Do not proceed; contact an admin.',
-          matches: intersection,
-          clearOnRescan: lastScanned,
-        );
         setState(() => _retrieveResolvedBooking = null);
-        return;
+        return 'Multiple bookings match this roll and rack';
       }
 
       final resolved = intersection.single;
       final isFlagged =
           resolved.status == 'flagged' || await db.isBookingFlagged(resolved.id);
       if (isFlagged) {
-        await _showContactAdminMatches(
-          title: 'Flagged booking — Contact admin',
-          message:
-              'This booking is flagged as conflicting. Do not retrieve/complete it. Contact an admin.',
-          matches: [resolved],
-          clearOnRescan: lastScanned,
-        );
         setState(() => _retrieveResolvedBooking = null);
-        return;
+        return 'Booking flagged';
       }
 
       setState(() => _retrieveResolvedBooking = resolved);
-      return;
+      return null;
     }
 
-    // Single scan stage: if ambiguous, show matches + contact admin.
     if (candidate != null) {
       final matches = await db.findOpenBookingsByCandidateId(candidate);
       if (matches.isEmpty && !_didAutoSyncConflict) {
         _didAutoSyncConflict = true;
         await ref.read(syncServiceProvider).syncOnce(trigger: SyncTrigger.autoTimer);
-        await _attemptResolveRetrieve(lastScanned: lastScanned);
-        return;
+        return _attemptResolveRetrieve(lastScanned: lastScanned);
       }
       if (matches.isEmpty) {
         setState(() => _retrieveResolvedBooking = null);
-        return;
+        return 'No active booking for this roll';
       }
       if (matches.length == 1) {
         final flagged = await db.isBookingFlagged(matches.single.id);
         if (flagged) {
-          await _showContactAdminMatches(
-            title: 'Flagged booking — Contact admin',
-            message:
-                'This booking is flagged as conflicting. Do not proceed. Contact an admin.',
-            matches: matches,
-            clearOnRescan: lastScanned,
-          );
           setState(() {
             _retrieveCandidateId = null;
             _retrieveResolvedBooking = null;
           });
-          return;
+          return 'Booking flagged';
         }
-        // Unique match: we can hint the expected Rack ID.
         setState(() => _retrieveResolvedBooking = matches.single);
-        return;
+        return null;
       }
       if (matches.length > 1) {
-        await _showContactAdminMatches(
-          title: 'Multiple matches — Contact admin',
-          message:
-              'Multiple active/flagged bookings share this Candidate ID. Scan the Rack ID only after admin confirms the correct mapping.',
-          matches: matches,
-          clearOnRescan: lastScanned,
-        );
         setState(() {
           _retrieveCandidateId = null;
           _retrieveResolvedBooking = null;
         });
-        return;
+        return 'Multiple bookings for this roll';
       }
     }
     if (rack != null) {
@@ -611,74 +501,54 @@ class _ScanScreenState extends ConsumerState<ScanScreen> {
       if (matches.isEmpty && !_didAutoSyncConflict) {
         _didAutoSyncConflict = true;
         await ref.read(syncServiceProvider).syncOnce(trigger: SyncTrigger.autoTimer);
-        await _attemptResolveRetrieve(lastScanned: lastScanned);
-        return;
+        return _attemptResolveRetrieve(lastScanned: lastScanned);
       }
       if (matches.isEmpty) {
         setState(() => _retrieveResolvedBooking = null);
-        return;
+        return 'No active booking for this rack';
       }
       if (matches.length == 1) {
         final flagged = await db.isBookingFlagged(matches.single.id);
         if (flagged) {
-          await _showContactAdminMatches(
-            title: 'Flagged booking — Contact admin',
-            message:
-                'This booking is flagged as conflicting. Do not proceed. Contact an admin.',
-            matches: matches,
-            clearOnRescan: lastScanned,
-          );
           setState(() {
             _retrieveRackId = null;
             _retrieveResolvedBooking = null;
           });
-          return;
+          return 'Booking flagged';
         }
-        // Unique match: we can hint the expected Candidate ID.
         setState(() => _retrieveResolvedBooking = matches.single);
-        return;
+        return null;
       }
       if (matches.length > 1) {
-        await _showContactAdminMatches(
-          title: 'Multiple matches — Contact admin',
-          message:
-              'Multiple active/flagged bookings share this Rack ID. Scan the Candidate ID only after admin confirms the correct mapping.',
-          matches: matches,
-          clearOnRescan: lastScanned,
-        );
         setState(() {
           _retrieveRackId = null;
           _retrieveResolvedBooking = null;
         });
-        return;
+        return 'Multiple bookings for this rack';
       }
     }
+    return null;
   }
 
-  Future<void> _onRetrieveCandidateScanned(String candidateId) async {
+  Future<_ScanHandlerResult> _onRetrieveCandidateScanned(String candidateId) async {
     final db = ref.read(appDbProvider);
     final flagged = await db.isCandidateFlagged(candidateId);
     if (flagged) {
-      await _alert(
-        'This Candidate ID ($candidateId) is in a FLAGGED booking. Retrieve is blocked — contact an admin.',
-        level: AppAlertLevel.error,
+      return (
+        accepted: false,
+        rejectMessage: 'Booking flagged',
       );
-      return;
     }
     final dups = await db.findOpenBookingsByCandidateId(candidateId);
     if (dups.length > 1) {
-      await _showContactAdminMatches(
-        title: 'Multiple matches — Contact admin',
-        message:
-            'Multiple active/flagged bookings share Candidate ID ($candidateId). Do not proceed; contact an admin.',
-        matches: dups,
-        clearOnRescan: _FirstScan.candidate,
-      );
       setState(() {
         _retrieveCandidateId = null;
         _retrieveResolvedBooking = null;
       });
-      return;
+      return (
+        accepted: false,
+        rejectMessage: 'Multiple bookings for this roll',
+      );
     }
 
     _retrieveFirst ??= _FirstScan.candidate;
@@ -693,34 +563,34 @@ class _ScanScreenState extends ConsumerState<ScanScreen> {
       _retrieveResolvedBooking = null;
     });
 
-    await _attemptResolveRetrieve(lastScanned: _FirstScan.candidate);
+    final resolveErr =
+        await _attemptResolveRetrieve(lastScanned: _FirstScan.candidate);
     _cooldownUntil = DateTime.now().add(const Duration(milliseconds: 1200));
+    if (resolveErr != null) {
+      return (accepted: false, rejectMessage: resolveErr);
+    }
+    return (accepted: true, rejectMessage: null);
   }
 
-  Future<void> _onRetrieveRackScanned(String rackId) async {
+  Future<_ScanHandlerResult> _onRetrieveRackScanned(String rackId) async {
     final db = ref.read(appDbProvider);
     final flagged = await db.isRackFlagged(rackId);
     if (flagged) {
-      await _alert(
-        'Rack ID ($rackId) is in a FLAGGED booking. Retrieve is blocked — contact an admin.',
-        level: AppAlertLevel.error,
+      return (
+        accepted: false,
+        rejectMessage: 'Booking flagged',
       );
-      return;
     }
     final dups = await db.findOpenBookingsByRackId(rackId);
     if (dups.length > 1) {
-      await _showContactAdminMatches(
-        title: 'Multiple matches — Contact admin',
-        message:
-            'Multiple active/flagged bookings share Rack ID ($rackId). Do not proceed; contact an admin.',
-        matches: dups,
-        clearOnRescan: _FirstScan.rack,
-      );
       setState(() {
         _retrieveRackId = null;
         _retrieveResolvedBooking = null;
       });
-      return;
+      return (
+        accepted: false,
+        rejectMessage: 'Multiple bookings for this rack',
+      );
     }
 
     _retrieveFirst ??= _FirstScan.rack;
@@ -735,8 +605,12 @@ class _ScanScreenState extends ConsumerState<ScanScreen> {
       _retrieveResolvedBooking = null;
     });
 
-    await _attemptResolveRetrieve(lastScanned: _FirstScan.rack);
+    final resolveErr = await _attemptResolveRetrieve(lastScanned: _FirstScan.rack);
     _cooldownUntil = DateTime.now().add(const Duration(milliseconds: 1200));
+    if (resolveErr != null) {
+      return (accepted: false, rejectMessage: resolveErr);
+    }
+    return (accepted: true, rejectMessage: null);
   }
 
   Future<void> _confirmReturn() async {
@@ -802,6 +676,8 @@ class _ScanScreenState extends ConsumerState<ScanScreen> {
       _depositFirst = null;
       _depositCandidateId = null;
       _depositRackId = null;
+      _scanAwaitingTap = false;
+      _feedbackFlash = null;
     });
   }
 
@@ -819,6 +695,33 @@ class _ScanScreenState extends ConsumerState<ScanScreen> {
       _retrieveCandidateId = null;
       _retrieveRackId = null;
       _retrieveResolvedBooking = null;
+      _scanAwaitingTap = false;
+      _feedbackFlash = null;
+    });
+  }
+
+  void _flashScanFeedback({
+    required bool success,
+    String? message,
+    String? displayCandidate,
+    String? displayRack,
+  }) {
+    if (!mounted) return;
+    _feedbackSeq += 1;
+    final seq = _feedbackSeq;
+    if (success) {
+      HapticFeedback.mediumImpact();
+    } else {
+      HapticFeedback.lightImpact();
+    }
+    setState(() {
+      _feedbackFlash = (
+        success: success,
+        message: message,
+        seq: seq,
+        displayCandidate: displayCandidate,
+        displayRack: displayRack,
+      );
     });
   }
 
@@ -829,17 +732,47 @@ class _ScanScreenState extends ConsumerState<ScanScreen> {
     final candidateId = _parseCandidateId(trimmed);
     final rackId = _parseRackId(trimmed);
 
+    _ScanHandlerResult? result;
     if (_operation == SopOperation.deposit) {
       if (candidateId != null) {
-        await _onDepositCandidateScanned(candidateId);
+        result = await _onDepositCandidateScanned(candidateId);
       } else if (rackId != null) {
-        await _onDepositRackScanned(rackId);
+        result = await _onDepositRackScanned(rackId);
       }
     } else {
       if (candidateId != null) {
-        await _onRetrieveCandidateScanned(candidateId);
+        result = await _onRetrieveCandidateScanned(candidateId);
       } else if (rackId != null) {
-        await _onRetrieveRackScanned(rackId);
+        result = await _onRetrieveRackScanned(rackId);
+      }
+    }
+
+    if (!mounted || trimmed.isEmpty) return;
+
+    final dispCand =
+        _operation == SopOperation.deposit ? _depositCandidateId : _retrieveCandidateId;
+    final dispRack =
+        _operation == SopOperation.deposit ? _depositRackId : _retrieveRackId;
+
+    if (candidateId == null && rackId == null) {
+      _flashScanFeedback(
+        success: false,
+        message: 'Wrong format — use 10-digit roll or rack like R042',
+      );
+    } else if (result != null) {
+      if (result.accepted) {
+        _flashScanFeedback(
+          success: true,
+          displayCandidate: dispCand,
+          displayRack: dispRack,
+        );
+      } else {
+        _flashScanFeedback(
+          success: false,
+          message: result.rejectMessage ?? 'Scan not accepted',
+          displayCandidate: candidateId,
+          displayRack: rackId,
+        );
       }
     }
   }
@@ -872,6 +805,7 @@ class _ScanScreenState extends ConsumerState<ScanScreen> {
       await controller.startImageStream((image) async {
         if (_isProcessing) return;
         if (_blockCameraProcessing) return;
+        if (_scanAwaitingTap) return;
         final until = _cooldownUntil;
         if (until != null && DateTime.now().isBefore(until)) return;
         _isProcessing = true;
@@ -895,6 +829,17 @@ class _ScanScreenState extends ConsumerState<ScanScreen> {
           _logScan('[DETECT] format=${first.format} value="$preview"');
 
           await _onBarcodeScanned(trimmed);
+          if (mounted) {
+            setState(() {
+              if (_blockCameraProcessing) {
+                // Confirm sheet is showing — no "next scan" gate; don't cover UI.
+                _scanAwaitingTap = false;
+                _feedbackFlash = null;
+              } else {
+                _scanAwaitingTap = true;
+              }
+            });
+          }
         } catch (e) {
           _logScan('[ERR] $e');
         } finally {
@@ -1017,32 +962,16 @@ class _ScanScreenState extends ConsumerState<ScanScreen> {
               ),
             ),
           ),
-          if (_operation == SopOperation.deposit &&
-              (_depositCandidateId != null || _depositRackId != null))
-            Positioned(
-              left: 16,
-              right: 16,
-              bottom: (_depositCandidateId != null && _depositRackId != null) ? 260 : 72,
-              child: _ScannedValuesCard(
-                title: 'Scanned (deposit)',
-                candidateId: _depositCandidateId,
-                rackId: _depositRackId,
-              ),
-            ),
-          if (_operation == SopOperation.retrieve &&
-              (_retrieveCandidateId != null || _retrieveRackId != null))
-            Positioned(
-              left: 16,
-              right: 16,
-              bottom: (_retrieveResolvedBooking != null &&
-                      _retrieveCandidateId != null &&
-                      _retrieveRackId != null)
-                  ? 260
-                  : 72,
-              child: _ScannedValuesCard(
-                title: 'Scanned (retrieve)',
-                candidateId: _retrieveCandidateId,
-                rackId: _retrieveRackId,
+          if (_feedbackFlash != null)
+            Positioned.fill(
+              child: IgnorePointer(
+                child: _ScanResultFlash(
+                  key: ValueKey<int>(_feedbackFlash!.seq),
+                  success: _feedbackFlash!.success,
+                  message: _feedbackFlash!.message,
+                  displayCandidate: _feedbackFlash!.displayCandidate,
+                  displayRack: _feedbackFlash!.displayRack,
+                ),
               ),
             ),
           if (_operation == SopOperation.deposit &&
@@ -1078,6 +1007,49 @@ class _ScanScreenState extends ConsumerState<ScanScreen> {
                 booking: _retrieveResolvedBooking!,
                 onConfirm: _confirmReturn,
                 onCancel: _cancelRetrieve,
+              ),
+            ),
+          if (_scanAwaitingTap && !_blockCameraProcessing)
+            Positioned(
+              left: 16,
+              right: 16,
+              bottom: 80,
+              child: Material(
+                elevation: 4,
+                borderRadius: BorderRadius.circular(14),
+                color: AppPalette.card,
+                child: InkWell(
+                  borderRadius: BorderRadius.circular(14),
+                  onTap: () {
+                    setState(() {
+                      _scanAwaitingTap = false;
+                      _cooldownUntil = null;
+                      _feedbackFlash = null;
+                    });
+                  },
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+                    child: Row(
+                      children: [
+                        Icon(Icons.touch_app_rounded, color: Theme.of(context).colorScheme.primary),
+                        const SizedBox(width: 12),
+                        Expanded(
+                          child: Text(
+                            'Tap when ready for the next scan',
+                            style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                                  fontWeight: FontWeight.w800,
+                                ),
+                          ),
+                        ),
+                        Icon(
+                          Icons.arrow_forward_ios_rounded,
+                          size: 16,
+                          color: AppPalette.textSecondary,
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
               ),
             ),
           Positioned(
@@ -1163,74 +1135,181 @@ class _HintStrip extends StatelessWidget {
   }
 }
 
-class _ScannedValuesCard extends StatelessWidget {
-  const _ScannedValuesCard({
-    required this.title,
-    required this.candidateId,
-    required this.rackId,
+class _ScanResultFlash extends StatefulWidget {
+  const _ScanResultFlash({
+    super.key,
+    required this.success,
+    this.message,
+    this.displayCandidate,
+    this.displayRack,
   });
 
-  final String title;
-  final String? candidateId;
-  final String? rackId;
+  final bool success;
+  final String? message;
+  final String? displayCandidate;
+  final String? displayRack;
+
+  @override
+  State<_ScanResultFlash> createState() => _ScanResultFlashState();
+}
+
+class _ScanResultFlashState extends State<_ScanResultFlash>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _c;
+
+  @override
+  void initState() {
+    super.initState();
+    _c = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 520),
+    )..forward();
+  }
+
+  @override
+  void dispose() {
+    _c.dispose();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
-    return Card(
-      color: Colors.black.withValues(alpha: 0.45),
-      child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(
-              title,
-              style: Theme.of(context).textTheme.labelMedium?.copyWith(
-                    color: Colors.white.withValues(alpha: 0.85),
-                    fontWeight: FontWeight.w700,
+    final scale = CurvedAnimation(parent: _c, curve: Curves.elasticOut);
+    final fade = CurvedAnimation(parent: _c, curve: const Interval(0, 0.45, curve: Curves.easeOut));
+
+    final bg = widget.success ? AppPalette.success : AppPalette.danger;
+    final icon = widget.success ? Icons.check_rounded : Icons.close_rounded;
+
+    String fmt(String? v) {
+      final t = v?.trim();
+      return (t == null || t.isEmpty) ? '—' : t;
+    }
+
+    final cand = widget.displayCandidate;
+    final rack = widget.displayRack;
+    final showValues = widget.success ||
+        (cand?.trim().isNotEmpty == true) ||
+        (rack?.trim().isNotEmpty == true);
+
+    return ColoredBox(
+      color: Colors.black.withValues(alpha: 0.12),
+      child: Center(
+        child: FadeTransition(
+          opacity: fade,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              ScaleTransition(
+                scale: scale,
+                child: Container(
+                  width: 76,
+                  height: 76,
+                  decoration: BoxDecoration(
+                    color: bg,
+                    shape: BoxShape.circle,
+                    boxShadow: [
+                      BoxShadow(
+                        color: bg.withValues(alpha: 0.45),
+                        blurRadius: 20,
+                        spreadRadius: 2,
+                      ),
+                    ],
                   ),
-            ),
-            const SizedBox(height: 8),
-            _ScannedLine(label: 'Candidate', value: candidateId),
-            const SizedBox(height: 6),
-            _ScannedLine(label: 'Rack', value: rackId),
-          ],
+                  child: Icon(icon, color: Colors.white, size: 44),
+                ),
+              ),
+              if (widget.message != null && widget.message!.isNotEmpty) ...[
+                const SizedBox(height: 14),
+                Container(
+                  constraints: const BoxConstraints(maxWidth: 280),
+                  padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                  decoration: BoxDecoration(
+                    color: Colors.white.withValues(alpha: 0.95),
+                    borderRadius: BorderRadius.circular(14),
+                    boxShadow: [
+                      BoxShadow(
+                        color: Colors.black.withValues(alpha: 0.12),
+                        blurRadius: 12,
+                        offset: const Offset(0, 4),
+                      ),
+                    ],
+                  ),
+                  child: Text(
+                    widget.message!,
+                    textAlign: TextAlign.center,
+                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                          color: AppPalette.textPrimary,
+                          fontWeight: FontWeight.w600,
+                          height: 1.25,
+                        ),
+                  ),
+                ),
+              ],
+              if (showValues) ...[
+                const SizedBox(height: 14),
+                Container(
+                  constraints: const BoxConstraints(maxWidth: 280),
+                  padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+                  decoration: BoxDecoration(
+                    color: Colors.white.withValues(alpha: 0.95),
+                    borderRadius: BorderRadius.circular(14),
+                    boxShadow: [
+                      BoxShadow(
+                        color: Colors.black.withValues(alpha: 0.12),
+                        blurRadius: 12,
+                        offset: const Offset(0, 4),
+                      ),
+                    ],
+                  ),
+                  child: Column(
+                    children: [
+                      _FlashScanValueRow(label: 'Roll', value: fmt(cand)),
+                      const SizedBox(height: 8),
+                      _FlashScanValueRow(label: 'Rack', value: fmt(rack)),
+                    ],
+                  ),
+                ),
+              ],
+            ],
+          ),
         ),
       ),
     );
   }
 }
 
-class _ScannedLine extends StatelessWidget {
-  const _ScannedLine({required this.label, required this.value});
+class _FlashScanValueRow extends StatelessWidget {
+  const _FlashScanValueRow({required this.label, required this.value});
 
   final String label;
-  final String? value;
+  final String value;
 
   @override
   Widget build(BuildContext context) {
+    final isDash = value == '—';
     return Row(
+      crossAxisAlignment: CrossAxisAlignment.baseline,
+      textBaseline: TextBaseline.alphabetic,
       children: [
         SizedBox(
-          width: 86,
+          width: 44,
           child: Text(
             label,
             style: Theme.of(context).textTheme.labelSmall?.copyWith(
-                  color: Colors.white.withValues(alpha: 0.70),
-                  fontWeight: FontWeight.w600,
+                  color: AppPalette.textSecondary,
+                  fontWeight: FontWeight.w700,
                 ),
           ),
         ),
-        const SizedBox(width: 10),
         Expanded(
           child: Text(
-            value?.trim().isNotEmpty == true ? value! : '—',
+            value,
             maxLines: 1,
             overflow: TextOverflow.ellipsis,
-            style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                  color: Colors.white,
+            style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                  color: isDash ? AppPalette.textSecondary : AppPalette.textPrimary,
                   fontFamily: 'monospace',
-                  fontWeight: FontWeight.w700,
+                  fontWeight: FontWeight.w800,
                 ),
           ),
         ),

@@ -5,10 +5,12 @@ import 'dart:developer' as dev;
 import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart' show kReleaseMode;
+import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 
 import '../app/alerts.dart';
+import '../app/nav.dart';
 import '../data/local/app_db.dart';
 import '../data/remote/auth_api.dart';
 import '../data/remote/sync_api.dart';
@@ -154,6 +156,9 @@ class SyncService {
         key: _lastPullAtKey,
         value: DateTime.now().toUtc().toIso8601String(),
       );
+      _ref.read(syncStateProvider.notifier).markPull();
+      // Consider a successful sync cycle as a “push moment” even if there were 0 mutations.
+      _ref.read(syncStateProvider.notifier).markPush();
       _ref.read(syncStateProvider.notifier).setError(null);
 
       final pendingAfter = await db.countPendingPush();
@@ -250,25 +255,78 @@ class SyncService {
     }
 
     // Prune local bookings that were previously synced, have no pending pushes,
-    // and no longer exist on the server (server-side deletion).
+    // and no longer exist on the server (server-side deletion or empty DB).
     final localBookings = await (db.select(
       db.bookings,
     )..where((t) => t.synced.equals(true))).get();
 
-    // If server returned no bookings but we have local synced rows, do not delete.
-    if (serverIds.isEmpty && localBookings.isNotEmpty) {
-      dev.log('[SYNC] prune skipped (empty server set)', name: 'sync');
-      return;
-    }
-
+    var removedForEmptyServer = 0;
     for (final b in localBookings) {
       final hasPending =
           !b.pushedStart || (b.status == 'complete' && !b.pushedFinish);
       if (hasPending) continue;
       if (!serverIds.contains(b.id)) {
         await db.deleteBookingCascade(b.id);
+        if (serverIds.isEmpty) removedForEmptyServer += 1;
       }
     }
+
+    if (serverIds.isEmpty && removedForEmptyServer > 0) {
+      dev.log(
+        '[SYNC] empty server pull: removed $removedForEmptyServer local synced booking(s)',
+        name: 'sync',
+      );
+      _notifyServerWipe(removedCount: removedForEmptyServer);
+    }
+  }
+
+  /// After a successful pull, the server reported zero bookings; we removed
+  /// stale local copies. Pending (unsynced / not fully pushed) rows are kept.
+  void _notifyServerWipe({required int removedCount}) {
+    _ref
+        .read(notificationsControllerProvider.notifier)
+        .add(
+          title: 'Server booking list empty',
+          message:
+              'The server has no bookings. Removed $removedCount synced '
+              'booking(s) from this device. Pending uploads were kept. '
+              'If the database was reset, sign out and sign in again.',
+          level: AppAlertLevel.warning,
+          kind: AppNotificationKind.sync,
+        );
+
+    final navCtx = appNavigatorKey.currentContext;
+    if (navCtx == null || !navCtx.mounted) return;
+
+    unawaited(
+      showDialog<void>(
+        context: navCtx,
+        builder: (ctx) {
+          return AlertDialog(
+            title: const Text('Server data reset'),
+            content: Text(
+              'The server returned no bookings after sync. '
+              'Removed $removedCount previously synced booking(s) from this device. '
+              'Items still waiting to upload were kept.\n\n'
+              'If your database was wiped or migrated, sign out and sign in again.',
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.of(ctx).pop(),
+                child: const Text('OK'),
+              ),
+              TextButton(
+                onPressed: () {
+                  Navigator.of(ctx).pop();
+                  unawaited(_ref.read(authControllerProvider.notifier).logout());
+                },
+                child: const Text('Sign out'),
+              ),
+            ],
+          );
+        },
+      ),
+    );
   }
 
   Future<void> _pushAllPendingWithRetry({required SyncTrigger trigger}) async {

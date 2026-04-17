@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../app/time_format.dart';
 import 'sync_state.dart';
 
 class SyncStatusWidget extends ConsumerWidget {
@@ -20,7 +21,7 @@ class SyncStatusWidget extends ConsumerWidget {
             const SizedBox(height: 8),
             Text('Pending: ${status.pendingMutations}'),
             Text('Syncing: ${status.syncing ? 'yes' : 'no'}'),
-            Text('Last push: ${status.lastPushAt?.toIso8601String() ?? '—'}'),
+            Text('Last push: ${formatIst(status.lastPushAt)}'),
             if (status.lastError != null) ...[
               const SizedBox(height: 8),
               Text(

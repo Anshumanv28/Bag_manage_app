@@ -3,6 +3,7 @@ import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../app/theme.dart';
+import '../app/time_format.dart';
 import '../data/local/app_db.dart';
 import '../data/remote/health_api.dart';
 import 'sync_service.dart';
@@ -295,7 +296,7 @@ class _SyncBannerState extends ConsumerState<SyncBanner> {
                           )
                         else
                           Text(
-                            'Last push: ${status.lastPushAt?.toIso8601String() ?? '—'}',
+                            'Last push: ${formatIst(status.lastPushAt)}',
                             maxLines: 1,
                             overflow: TextOverflow.ellipsis,
                             style: Theme.of(context).textTheme.bodySmall,
