@@ -32,6 +32,15 @@ android {
 
     buildTypes {
         release {
+            // Release scanner failures are often caused by shrinking/obfuscation stripping
+            // ML Kit classes referenced via reflection. Keep rules are provided and
+            // minification/shrinking are explicitly disabled for safety.
+            isMinifyEnabled = false
+            isShrinkResources = false
+            proguardFiles(
+                getDefaultProguardFile("proguard-android-optimize.txt"),
+                "proguard-rules.pro",
+            )
             // TODO: Add your own signing config for the release build.
             // Signing with the debug keys for now, so `flutter run --release` works.
             signingConfig = signingConfigs.getByName("debug")

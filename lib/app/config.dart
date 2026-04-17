@@ -41,4 +41,20 @@ class AppConfig {
     const raw = String.fromEnvironment('DISABLE_REFRESH');
     return raw.toLowerCase() == 'true' || raw == '1';
   }
+
+  /// Auto sync interval.
+  ///
+  /// Override at runtime via:
+  /// - `flutter run --dart-define=AUTO_SYNC_SECONDS=5`
+  /// - `flutter build apk --release --dart-define=AUTO_SYNC_SECONDS=5`
+  ///
+  /// Defaults to 5 seconds (same for debug + release).
+  static Duration get autoSyncInterval {
+    const raw = String.fromEnvironment('AUTO_SYNC_SECONDS');
+    final v = int.tryParse(raw);
+    if (v != null && v > 0 && v <= 3600) {
+      return Duration(seconds: v);
+    }
+    return const Duration(seconds: 5);
+  }
 }

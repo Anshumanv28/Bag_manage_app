@@ -459,7 +459,7 @@ class _ScanScreenState extends ConsumerState<ScanScreen> {
           }
           _retrieveResolvedBooking = null;
         });
-        return 'Roll and rack don\'t match';
+        return 'Roll No. and rack don\'t match';
       }
       if (intersection.length > 1) {
         setState(() => _retrieveResolvedBooking = null);
