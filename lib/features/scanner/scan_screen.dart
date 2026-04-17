@@ -63,18 +63,24 @@ class _ScanScreenState extends ConsumerState<ScanScreen> {
     int seq,
     String? displayCandidate,
     String? displayRack,
-  })? _feedbackFlash;
+  })?
+  _feedbackFlash;
+
   /// After each decoded barcode, pause MLKit until the operator taps to continue (avoids repeat reads).
   bool _scanAwaitingTap = false;
 
   int _activeStepIndex() {
     if (_operation == SopOperation.deposit) {
-      final n = (_depositCandidateId != null ? 1 : 0) + (_depositRackId != null ? 1 : 0);
+      final n =
+          (_depositCandidateId != null ? 1 : 0) +
+          (_depositRackId != null ? 1 : 0);
       if (n <= 0) return 0;
       if (n == 1) return 1;
       return 2;
     }
-    final n = (_retrieveCandidateId != null ? 1 : 0) + (_retrieveRackId != null ? 1 : 0);
+    final n =
+        (_retrieveCandidateId != null ? 1 : 0) +
+        (_retrieveRackId != null ? 1 : 0);
     if (n <= 0) return 0;
     if (n == 1) return 1;
     return 2;
@@ -120,7 +126,9 @@ class _ScanScreenState extends ConsumerState<ScanScreen> {
                   mainAxisSize: MainAxisSize.min,
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    const Text('Pushing local changes and pulling latest bookings…'),
+                    const Text(
+                      'Pushing local changes and pulling latest bookings…',
+                    ),
                     const SizedBox(height: 16),
                     Row(
                       children: [
@@ -142,12 +150,18 @@ class _ScanScreenState extends ConsumerState<ScanScreen> {
       },
     );
 
-    final health = await ref.read(healthApiProvider).isHealthy().catchError((_) => false);
+    final health = await ref
+        .read(healthApiProvider)
+        .isHealthy()
+        .catchError((_) => false);
     if (!health) {
       ref.read(syncStateProvider.notifier).setError('server unhealthy');
       if (mounted) Navigator.of(context, rootNavigator: true).pop();
       stage.dispose();
-      await _alert('Server is unavailable. Try again shortly.', level: AppAlertLevel.warning);
+      await _alert(
+        'Server is unavailable. Try again shortly.',
+        level: AppAlertLevel.warning,
+      );
       return;
     }
 
@@ -192,8 +206,9 @@ class _ScanScreenState extends ConsumerState<ScanScreen> {
     String? rackId,
     Map<String, Object?>? metadata,
   }) async {
-    final session =
-        ref.read(authControllerProvider).maybeWhen(data: (s) => s, orElse: () => null);
+    final session = ref
+        .read(authControllerProvider)
+        .maybeWhen(data: (s) => s, orElse: () => null);
     final operatorId = session?.operator.phone;
     if (operatorId == null || operatorId.isEmpty) return;
     final db = ref.read(appDbProvider);
@@ -223,7 +238,9 @@ class _ScanScreenState extends ConsumerState<ScanScreen> {
     if (_operation == SopOperation.deposit) {
       return _depositCandidateId != null && _depositRackId != null;
     }
-    return _retrieveCandidateId != null && _retrieveRackId != null && _retrieveResolvedBooking != null;
+    return _retrieveCandidateId != null &&
+        _retrieveRackId != null &&
+        _retrieveResolvedBooking != null;
   }
 
   String _hintText() {
@@ -253,22 +270,18 @@ class _ScanScreenState extends ConsumerState<ScanScreen> {
     return 'Verify bag, then confirm return';
   }
 
-  Future<_ScanHandlerResult> _onDepositCandidateScanned(String candidateId) async {
+  Future<_ScanHandlerResult> _onDepositCandidateScanned(
+    String candidateId,
+  ) async {
     final db = ref.read(appDbProvider);
     final flagged = await db.isCandidateFlagged(candidateId);
     if (flagged) {
-      return (
-        accepted: false,
-        rejectMessage: 'Booking flagged',
-      );
+      return (accepted: false, rejectMessage: 'Booking flagged');
     }
 
     final dups = await db.findActiveBookingsByCandidateId(candidateId);
     if (dups.isNotEmpty) {
-      return (
-        accepted: false,
-        rejectMessage: 'Candidate already deposited',
-      );
+      return (accepted: false, rejectMessage: 'Candidate already deposited');
     }
 
     _depositFirst ??= _FirstScan.candidate;
@@ -290,18 +303,12 @@ class _ScanScreenState extends ConsumerState<ScanScreen> {
     final db = ref.read(appDbProvider);
     final flagged = await db.isRackFlagged(rackId);
     if (flagged) {
-      return (
-        accepted: false,
-        rejectMessage: 'Booking flagged',
-      );
+      return (accepted: false, rejectMessage: 'Booking flagged');
     }
 
     final rackDups = await db.findActiveBookingsByRackId(rackId);
     if (rackDups.isNotEmpty) {
-      return (
-        accepted: false,
-        rejectMessage: 'Rack already in use',
-      );
+      return (accepted: false, rejectMessage: 'Rack already in use');
     }
 
     _depositFirst ??= _FirstScan.rack;
@@ -404,7 +411,9 @@ class _ScanScreenState extends ConsumerState<ScanScreen> {
     _cooldownUntil = DateTime.now().add(const Duration(milliseconds: 1200));
   }
 
-  Future<String?> _attemptResolveRetrieve({required _FirstScan lastScanned}) async {
+  Future<String?> _attemptResolveRetrieve({
+    required _FirstScan lastScanned,
+  }) async {
     final candidate = _retrieveCandidateId;
     final rack = _retrieveRackId;
     final db = ref.read(appDbProvider);
@@ -414,12 +423,16 @@ class _ScanScreenState extends ConsumerState<ScanScreen> {
       final byRack = await db.findOpenBookingsByRackId(rack);
 
       final byRackIds = {for (final b in byRack) b.id};
-      final intersection = byCandidate.where((b) => byRackIds.contains(b.id)).toList();
+      final intersection = byCandidate
+          .where((b) => byRackIds.contains(b.id))
+          .toList();
 
       if (intersection.isEmpty) {
         if (!_didAutoSyncConflict) {
           _didAutoSyncConflict = true;
-          await ref.read(syncServiceProvider).syncOnce(trigger: SyncTrigger.autoTimer);
+          await ref
+              .read(syncServiceProvider)
+              .syncOnce(trigger: SyncTrigger.autoTimer);
           return _attemptResolveRetrieve(lastScanned: lastScanned);
         }
 
@@ -455,7 +468,8 @@ class _ScanScreenState extends ConsumerState<ScanScreen> {
 
       final resolved = intersection.single;
       final isFlagged =
-          resolved.status == 'flagged' || await db.isBookingFlagged(resolved.id);
+          resolved.status == 'flagged' ||
+          await db.isBookingFlagged(resolved.id);
       if (isFlagged) {
         setState(() => _retrieveResolvedBooking = null);
         return 'Booking flagged';
@@ -469,7 +483,9 @@ class _ScanScreenState extends ConsumerState<ScanScreen> {
       final matches = await db.findOpenBookingsByCandidateId(candidate);
       if (matches.isEmpty && !_didAutoSyncConflict) {
         _didAutoSyncConflict = true;
-        await ref.read(syncServiceProvider).syncOnce(trigger: SyncTrigger.autoTimer);
+        await ref
+            .read(syncServiceProvider)
+            .syncOnce(trigger: SyncTrigger.autoTimer);
         return _attemptResolveRetrieve(lastScanned: lastScanned);
       }
       if (matches.isEmpty) {
@@ -500,7 +516,9 @@ class _ScanScreenState extends ConsumerState<ScanScreen> {
       final matches = await db.findOpenBookingsByRackId(rack);
       if (matches.isEmpty && !_didAutoSyncConflict) {
         _didAutoSyncConflict = true;
-        await ref.read(syncServiceProvider).syncOnce(trigger: SyncTrigger.autoTimer);
+        await ref
+            .read(syncServiceProvider)
+            .syncOnce(trigger: SyncTrigger.autoTimer);
         return _attemptResolveRetrieve(lastScanned: lastScanned);
       }
       if (matches.isEmpty) {
@@ -530,14 +548,13 @@ class _ScanScreenState extends ConsumerState<ScanScreen> {
     return null;
   }
 
-  Future<_ScanHandlerResult> _onRetrieveCandidateScanned(String candidateId) async {
+  Future<_ScanHandlerResult> _onRetrieveCandidateScanned(
+    String candidateId,
+  ) async {
     final db = ref.read(appDbProvider);
     final flagged = await db.isCandidateFlagged(candidateId);
     if (flagged) {
-      return (
-        accepted: false,
-        rejectMessage: 'Booking flagged',
-      );
+      return (accepted: false, rejectMessage: 'Booking flagged');
     }
     final dups = await db.findOpenBookingsByCandidateId(candidateId);
     if (dups.length > 1) {
@@ -563,8 +580,9 @@ class _ScanScreenState extends ConsumerState<ScanScreen> {
       _retrieveResolvedBooking = null;
     });
 
-    final resolveErr =
-        await _attemptResolveRetrieve(lastScanned: _FirstScan.candidate);
+    final resolveErr = await _attemptResolveRetrieve(
+      lastScanned: _FirstScan.candidate,
+    );
     _cooldownUntil = DateTime.now().add(const Duration(milliseconds: 1200));
     if (resolveErr != null) {
       return (accepted: false, rejectMessage: resolveErr);
@@ -576,10 +594,7 @@ class _ScanScreenState extends ConsumerState<ScanScreen> {
     final db = ref.read(appDbProvider);
     final flagged = await db.isRackFlagged(rackId);
     if (flagged) {
-      return (
-        accepted: false,
-        rejectMessage: 'Booking flagged',
-      );
+      return (accepted: false, rejectMessage: 'Booking flagged');
     }
     final dups = await db.findOpenBookingsByRackId(rackId);
     if (dups.length > 1) {
@@ -605,7 +620,9 @@ class _ScanScreenState extends ConsumerState<ScanScreen> {
       _retrieveResolvedBooking = null;
     });
 
-    final resolveErr = await _attemptResolveRetrieve(lastScanned: _FirstScan.rack);
+    final resolveErr = await _attemptResolveRetrieve(
+      lastScanned: _FirstScan.rack,
+    );
     _cooldownUntil = DateTime.now().add(const Duration(milliseconds: 1200));
     if (resolveErr != null) {
       return (accepted: false, rejectMessage: resolveErr);
@@ -749,10 +766,12 @@ class _ScanScreenState extends ConsumerState<ScanScreen> {
 
     if (!mounted || trimmed.isEmpty) return;
 
-    final dispCand =
-        _operation == SopOperation.deposit ? _depositCandidateId : _retrieveCandidateId;
-    final dispRack =
-        _operation == SopOperation.deposit ? _depositRackId : _retrieveRackId;
+    final dispCand = _operation == SopOperation.deposit
+        ? _depositCandidateId
+        : _retrieveCandidateId;
+    final dispRack = _operation == SopOperation.deposit
+        ? _depositRackId
+        : _retrieveRackId;
 
     if (candidateId == null && rackId == null) {
       _flashScanFeedback(
@@ -831,7 +850,10 @@ class _ScanScreenState extends ConsumerState<ScanScreen> {
           );
         }
         try {
-        final input = _toInputImage(image, rotationDegrees: back.sensorOrientation);
+          final input = _toInputImage(
+            image,
+            rotationDegrees: back.sensorOrientation,
+          );
           final barcodes = await _scanner!.processImage(input);
           if (barcodes.isEmpty) return;
           final first = barcodes.first;
@@ -839,8 +861,9 @@ class _ScanScreenState extends ConsumerState<ScanScreen> {
           if (raw == null || raw.trim().isEmpty || !mounted) return;
 
           final trimmed = raw.trim();
-          final preview =
-              trimmed.length <= 80 ? trimmed : '${trimmed.substring(0, 80)}…';
+          final preview = trimmed.length <= 80
+              ? trimmed
+              : '${trimmed.substring(0, 80)}…';
           _logScan('[DETECT] format=${first.format} value="$preview"');
 
           await _onBarcodeScanned(trimmed);
@@ -1043,17 +1066,22 @@ class _ScanScreenState extends ConsumerState<ScanScreen> {
                     });
                   },
                   child: Padding(
-                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 16,
+                      vertical: 14,
+                    ),
                     child: Row(
                       children: [
-                        Icon(Icons.touch_app_rounded, color: Theme.of(context).colorScheme.primary),
+                        Icon(
+                          Icons.touch_app_rounded,
+                          color: Theme.of(context).colorScheme.primary,
+                        ),
                         const SizedBox(width: 12),
                         Expanded(
                           child: Text(
                             'Tap when ready for the next scan',
-                            style: Theme.of(context).textTheme.titleSmall?.copyWith(
-                                  fontWeight: FontWeight.w800,
-                                ),
+                            style: Theme.of(context).textTheme.titleSmall
+                                ?.copyWith(fontWeight: FontWeight.w800),
                           ),
                         ),
                         Icon(
@@ -1101,7 +1129,7 @@ class _RetrieveConfirmSheet extends ConsumerWidget {
           title: 'Bag location',
           subtitle: flagged
               ? 'This booking is FLAGGED for admin review (duplicate candidate or rack). '
-                  'Go to the rack only if you are sure, then confirm return.'
+                    'Go to the rack only if you are sure, then confirm return.'
               : 'Go to the rack and locate the bag, then confirm return.',
           lines: [
             _KeyValueLine(
@@ -1133,14 +1161,17 @@ class _HintStrip extends StatelessWidget {
         padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
         child: Row(
           children: [
-            Icon(Icons.qr_code_scanner, color: Theme.of(context).colorScheme.primary),
+            Icon(
+              Icons.qr_code_scanner,
+              color: Theme.of(context).colorScheme.primary,
+            ),
             const SizedBox(width: 10),
             Expanded(
               child: Text(
                 text,
-                style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                      fontWeight: FontWeight.w600,
-                    ),
+                style: Theme.of(
+                  context,
+                ).textTheme.bodyMedium?.copyWith(fontWeight: FontWeight.w600),
               ),
             ),
           ],
@@ -1190,7 +1221,10 @@ class _ScanResultFlashState extends State<_ScanResultFlash>
   @override
   Widget build(BuildContext context) {
     final scale = CurvedAnimation(parent: _c, curve: Curves.elasticOut);
-    final fade = CurvedAnimation(parent: _c, curve: const Interval(0, 0.45, curve: Curves.easeOut));
+    final fade = CurvedAnimation(
+      parent: _c,
+      curve: const Interval(0, 0.45, curve: Curves.easeOut),
+    );
 
     final bg = widget.success ? AppPalette.success : AppPalette.danger;
     final icon = widget.success ? Icons.check_rounded : Icons.close_rounded;
@@ -1202,7 +1236,8 @@ class _ScanResultFlashState extends State<_ScanResultFlash>
 
     final cand = widget.displayCandidate;
     final rack = widget.displayRack;
-    final showValues = widget.success ||
+    final showValues =
+        widget.success ||
         (cand?.trim().isNotEmpty == true) ||
         (rack?.trim().isNotEmpty == true);
 
@@ -1237,7 +1272,10 @@ class _ScanResultFlashState extends State<_ScanResultFlash>
                 const SizedBox(height: 14),
                 Container(
                   constraints: const BoxConstraints(maxWidth: 280),
-                  padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 14,
+                    vertical: 10,
+                  ),
                   decoration: BoxDecoration(
                     color: Colors.white.withValues(alpha: 0.95),
                     borderRadius: BorderRadius.circular(14),
@@ -1253,10 +1291,10 @@ class _ScanResultFlashState extends State<_ScanResultFlash>
                     widget.message!,
                     textAlign: TextAlign.center,
                     style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                          color: AppPalette.textPrimary,
-                          fontWeight: FontWeight.w600,
-                          height: 1.25,
-                        ),
+                      color: AppPalette.textPrimary,
+                      fontWeight: FontWeight.w600,
+                      height: 1.25,
+                    ),
                   ),
                 ),
               ],
@@ -1264,7 +1302,10 @@ class _ScanResultFlashState extends State<_ScanResultFlash>
                 const SizedBox(height: 14),
                 Container(
                   constraints: const BoxConstraints(maxWidth: 280),
-                  padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 14,
+                    vertical: 12,
+                  ),
                   decoration: BoxDecoration(
                     color: Colors.white.withValues(alpha: 0.95),
                     borderRadius: BorderRadius.circular(14),
@@ -1311,9 +1352,9 @@ class _FlashScanValueRow extends StatelessWidget {
           child: Text(
             label,
             style: Theme.of(context).textTheme.labelSmall?.copyWith(
-                  color: AppPalette.textSecondary,
-                  fontWeight: FontWeight.w700,
-                ),
+              color: AppPalette.textSecondary,
+              fontWeight: FontWeight.w700,
+            ),
           ),
         ),
         Expanded(
@@ -1322,10 +1363,10 @@ class _FlashScanValueRow extends StatelessWidget {
             maxLines: 1,
             overflow: TextOverflow.ellipsis,
             style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                  color: isDash ? AppPalette.textSecondary : AppPalette.textPrimary,
-                  fontFamily: 'monospace',
-                  fontWeight: FontWeight.w800,
-                ),
+              color: isDash ? AppPalette.textSecondary : AppPalette.textPrimary,
+              fontFamily: 'monospace',
+              fontWeight: FontWeight.w800,
+            ),
           ),
         ),
       ],
@@ -1384,7 +1425,9 @@ class _ActionSheet extends StatelessWidget {
             Row(
               children: [
                 Icon(
-                  tone == _ActionTone.attention ? Icons.location_on_outlined : Icons.task_alt,
+                  tone == _ActionTone.attention
+                      ? Icons.location_on_outlined
+                      : Icons.task_alt,
                   color: cs.primary,
                 ),
                 const SizedBox(width: 10),
@@ -1392,8 +1435,8 @@ class _ActionSheet extends StatelessWidget {
                   child: Text(
                     title,
                     style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                          fontWeight: FontWeight.w800,
-                        ),
+                      fontWeight: FontWeight.w800,
+                    ),
                   ),
                 ),
               ],
@@ -1401,9 +1444,9 @@ class _ActionSheet extends StatelessWidget {
             const SizedBox(height: 6),
             Text(
               subtitle,
-              style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                    color: AppPalette.textSecondary,
-                  ),
+              style: Theme.of(
+                context,
+              ).textTheme.bodySmall?.copyWith(color: AppPalette.textSecondary),
             ),
             const SizedBox(height: 14),
             ...lines,
@@ -1414,10 +1457,7 @@ class _ActionSheet extends StatelessWidget {
               label: Text(primaryLabel.toUpperCase()),
             ),
             const SizedBox(height: 8),
-            OutlinedButton(
-              onPressed: onSecondary,
-              child: Text(secondaryLabel),
-            ),
+            OutlinedButton(onPressed: onSecondary, child: Text(secondaryLabel)),
           ],
         ),
       ),
@@ -1426,7 +1466,11 @@ class _ActionSheet extends StatelessWidget {
 }
 
 class _KeyValueLine extends StatelessWidget {
-  const _KeyValueLine({required this.label, required this.value, this.emphasize = false});
+  const _KeyValueLine({
+    required this.label,
+    required this.value,
+    this.emphasize = false,
+  });
   final String label;
   final String value;
   final bool emphasize;
@@ -1442,8 +1486,8 @@ class _KeyValueLine extends StatelessWidget {
             child: Text(
               label,
               style: Theme.of(context).textTheme.labelMedium?.copyWith(
-                    color: AppPalette.textSecondary,
-                  ),
+                color: AppPalette.textSecondary,
+              ),
             ),
           ),
           const SizedBox(width: 10),
@@ -1451,8 +1495,12 @@ class _KeyValueLine extends StatelessWidget {
             child: Text(
               value,
               style: emphasize
-                  ? Theme.of(context).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w900)
-                  : Theme.of(context).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w800),
+                  ? Theme.of(context).textTheme.titleLarge?.copyWith(
+                      fontWeight: FontWeight.w900,
+                    )
+                  : Theme.of(context).textTheme.titleMedium?.copyWith(
+                      fontWeight: FontWeight.w800,
+                    ),
             ),
           ),
         ],
@@ -1473,10 +1521,7 @@ String? _parseRackId(String raw) {
   return 'R${m.group(1)}';
 }
 
-InputImage _toInputImage(
-  CameraImage image, {
-  required int rotationDegrees,
-}) {
+InputImage _toInputImage(CameraImage image, {required int rotationDegrees}) {
   final WriteBuffer allBytes = WriteBuffer();
   for (final Plane plane in image.planes) {
     allBytes.putUint8List(plane.bytes);
@@ -1484,11 +1529,13 @@ InputImage _toInputImage(
   final bytes = allBytes.done().buffer.asUint8List();
 
   // Prefer the actual camera image format when available.
-  final format = InputImageFormatValue.fromRawValue(image.format.raw) ??
+  final format =
+      InputImageFormatValue.fromRawValue(image.format.raw) ??
       (Platform.isAndroid ? InputImageFormat.nv21 : InputImageFormat.bgra8888);
 
   // Prefer explicit rotation mapping; ML Kit is sensitive to incorrect rotation.
-  final rotation = InputImageRotationValue.fromRawValue(rotationDegrees) ??
+  final rotation =
+      InputImageRotationValue.fromRawValue(rotationDegrees) ??
       InputImageRotation.rotation0deg;
 
   final metadata = InputImageMetadata(

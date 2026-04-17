@@ -56,14 +56,18 @@ class SyncStatusApi {
   final Dio _dio;
 
   Future<OperatorSyncStatusResponse> latestByOperator() async {
-    final res = await _dio.get<Map<String, Object?>>('/auth/operators/sync-latest');
+    final res = await _dio.get<Map<String, Object?>>(
+      '/auth/operators/sync-latest',
+    );
     final data = res.data ?? const <String, Object?>{};
-    final rows = (data['rows'] as List?)
+    final rows =
+        (data['rows'] as List?)
             ?.whereType<Map>()
-            .map((m) => OperatorSyncStatusRow.fromJson(m.cast<String, Object?>()))
+            .map(
+              (m) => OperatorSyncStatusRow.fromJson(m.cast<String, Object?>()),
+            )
             .toList() ??
         const <OperatorSyncStatusRow>[];
     return OperatorSyncStatusResponse(rows: rows);
   }
 }
-
