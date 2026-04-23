@@ -1,3 +1,6 @@
+/// Canonical "now" for domain timestamps stored in Drift and sent on sync (UTC instant).
+DateTime utcNow() => DateTime.now().toUtc();
+
 DateTime toIst(DateTime dt) {
   // Server timestamps are UTC; we force IST regardless of device timezone.
   return dt.toUtc().add(const Duration(hours: 5, minutes: 30));

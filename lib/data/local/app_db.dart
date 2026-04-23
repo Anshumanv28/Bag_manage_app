@@ -4,6 +4,8 @@ import 'package:drift/drift.dart';
 import 'package:drift_flutter/drift_flutter.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../app/time_format.dart';
+
 part 'app_db.g.dart';
 
 class Bookings extends Table {
@@ -234,7 +236,7 @@ class AppDb extends _$AppDb {
       candidateId: candidateId,
       operatorId: operatorId,
       status: status,
-      startedAt: startedAt ?? DateTime.now(),
+      startedAt: startedAt ?? utcNow(),
       endedAt: endedAt,
     );
   }

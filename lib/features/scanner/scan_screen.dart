@@ -12,6 +12,7 @@ import 'package:uuid/uuid.dart';
 
 import '../../app/alerts.dart';
 import '../../app/theme.dart';
+import '../../app/time_format.dart';
 import '../../data/local/app_db.dart';
 import '../auth/auth_controller.dart';
 import '../../data/remote/health_api.dart';
@@ -219,7 +220,7 @@ class _ScanScreenState extends ConsumerState<ScanScreen> {
       eventType: eventType,
       candidateId: candidateId,
       rackId: rackId,
-      occurredAt: DateTime.now(),
+      occurredAt: utcNow(),
       metadataJson: metadata == null ? null : jsonEncode(metadata),
     );
   }
@@ -377,7 +378,7 @@ class _ScanScreenState extends ConsumerState<ScanScreen> {
       return;
     }
 
-    final now = DateTime.now();
+    final now = utcNow();
     final bookingId = const Uuid().v4();
 
     // If we already know locally that the candidate is flagged, block deposit creation.
@@ -650,7 +651,7 @@ class _ScanScreenState extends ConsumerState<ScanScreen> {
       return;
     }
 
-    final now = DateTime.now();
+    final now = utcNow();
     final db = ref.read(appDbProvider);
 
     await _logActivity(

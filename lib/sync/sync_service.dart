@@ -10,6 +10,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 
 import '../app/config.dart';
+import '../app/time_format.dart';
 import '../app/alerts.dart';
 import '../app/nav.dart';
 import '../data/local/app_db.dart';
@@ -233,7 +234,7 @@ class SyncService {
           };
           final createdAt =
               DateTime.tryParse(b['createdAt'] as String? ?? '') ??
-              DateTime.now();
+              utcNow();
           final completedRaw = b['completedAt'] as String?;
           final endedAt = completedRaw != null && completedRaw.isNotEmpty
               ? DateTime.tryParse(completedRaw)
@@ -461,7 +462,7 @@ class SyncService {
         'scanEventId': s.id,
         'operation': s.operation,
         'eventType': s.eventType,
-        'occurredAt': s.occurredAt.toIso8601String(),
+        'occurredAt': s.occurredAt.toUtc().toIso8601String(),
         if (s.candidateId != null) 'candidateId': s.candidateId,
         if (s.rackId != null) 'rackId': s.rackId,
       };
@@ -479,7 +480,7 @@ class SyncService {
         'eventType': s.eventType,
         'candidateId': s.candidateId,
         'rackId': s.rackId,
-        'occurredAt': s.occurredAt.toIso8601String(),
+        'occurredAt': s.occurredAt.toUtc().toIso8601String(),
       });
     }
 
@@ -490,7 +491,7 @@ class SyncService {
           'bookingId': b.id,
           'rackId': b.rackId,
           'candidateId': b.candidateId,
-          'startedAt': b.startedAt.toIso8601String(),
+          'startedAt': b.startedAt.toUtc().toIso8601String(),
         });
         mutationIndex.add((
           type: 'booking_start',
@@ -502,7 +503,7 @@ class SyncService {
           'bookingId': b.id,
           'candidateId': b.candidateId,
           'rackId': b.rackId,
-          'startedAt': b.startedAt.toIso8601String(),
+          'startedAt': b.startedAt.toUtc().toIso8601String(),
           'status': b.status,
         });
       }
@@ -511,7 +512,7 @@ class SyncService {
         mutations.add(<String, Object?>{
           'type': 'booking_finish',
           'bookingId': b.id,
-          'endedAt': (b.endedAt ?? DateTime.now()).toIso8601String(),
+          'endedAt': (b.endedAt ?? utcNow()).toUtc().toIso8601String(),
         });
         mutationIndex.add((
           type: 'booking_finish',
@@ -521,7 +522,7 @@ class SyncService {
         opLog.add({
           'type': 'booking_finish',
           'bookingId': b.id,
-          'endedAt': (b.endedAt ?? DateTime.now()).toIso8601String(),
+          'endedAt': (b.endedAt ?? utcNow()).toUtc().toIso8601String(),
         });
       }
     }
