@@ -5,7 +5,8 @@ class AppConfig {
   // Flip the active backend by commenting/uncommenting ONE of the lines below.
   // ---------------------------------------------------------------------------
   static const String _activeBackendOrigin = 'http://3.109.235.112:3040';
-  // static const String _activeBackendOrigin = 'http://172.16.2.86:3040';
+  // static const String _activeBackendOrigin = 'http://localhost:3040';
+  // static const String _activeBackendOrigin = 'http://192.168.1.45:3040';
 
   /// Backend origin (scheme + host + port), e.g. `http://localhost:3000`.
   ///

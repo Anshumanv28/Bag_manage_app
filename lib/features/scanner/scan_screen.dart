@@ -744,7 +744,7 @@ class _ScanScreenState extends ConsumerState<ScanScreen> {
 
   Future<void> _onBarcodeScanned(String trimmed) async {
     // Only accept:
-    // - Candidate ID: exactly 10 digits
+    // - Candidate ID (roll no.): 1–10 digits
     // - Rack ID: R + 3 digits (case-insensitive; normalized to uppercase)
     final candidateId = _parseCandidateId(trimmed);
     final rackId = _parseRackId(trimmed);
@@ -776,7 +776,7 @@ class _ScanScreenState extends ConsumerState<ScanScreen> {
     if (candidateId == null && rackId == null) {
       _flashScanFeedback(
         success: false,
-        message: 'Wrong format — use 10-digit roll or rack like R042',
+        message: 'Wrong format — use 1–10 digit roll or rack like R042',
       );
     } else if (result != null) {
       if (result.accepted) {
@@ -1511,7 +1511,7 @@ class _KeyValueLine extends StatelessWidget {
 
 String? _parseCandidateId(String raw) {
   final s = raw.trim();
-  return RegExp(r'^\d{10}$').hasMatch(s) ? s : null;
+  return RegExp(r'^\d{1,10}$').hasMatch(s) ? s : null;
 }
 
 String? _parseRackId(String raw) {

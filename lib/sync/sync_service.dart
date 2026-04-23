@@ -9,6 +9,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 
+import '../app/config.dart';
 import '../app/alerts.dart';
 import '../app/nav.dart';
 import '../data/local/app_db.dart';
@@ -105,9 +106,8 @@ class SyncService {
       }
     });
 
-    final interval = kReleaseMode
-        ? const Duration(minutes: 5)
-        : const Duration(seconds: 10);
+    final interval =
+        kReleaseMode ? AppConfig.autoSyncInterval : const Duration(seconds: 10);
     _autoSyncTimer = Timer.periodic(interval, (_) {
       unawaited(syncOnce(trigger: SyncTrigger.autoTimer));
     });
