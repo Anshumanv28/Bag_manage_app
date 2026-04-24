@@ -22,7 +22,7 @@ class ModeSelectScreen extends ConsumerWidget {
       child: ListView(
         padding: const EdgeInsets.all(16),
         children: [
-          Text('Baggage scan', style: Theme.of(context).textTheme.titleLarge),
+          Text('Bag_view', style: Theme.of(context).textTheme.titleLarge),
           const SizedBox(height: 8),
           Text(
             'Scan Candidate ID first. One bag per rack. Push to DB when online.',

@@ -107,14 +107,14 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
               padding: const EdgeInsets.all(16),
               children: [
                 const SizedBox(height: 16),
-                Icon(
-                  Icons.luggage_outlined,
-                  size: 48,
-                  color: Theme.of(context).colorScheme.primary,
+                Image.asset(
+                  'assets/bag_view_logo.png',
+                  height: 72,
+                  fit: BoxFit.contain,
                 ),
                 const SizedBox(height: 12),
                 Text(
-                  'Baggage Management',
+                  'Bag_view',
                   textAlign: TextAlign.center,
                   style: Theme.of(context).textTheme.headlineSmall,
                 ),

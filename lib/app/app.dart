@@ -21,7 +21,7 @@ class App extends ConsumerWidget {
 
     return MaterialApp(
       navigatorKey: appNavigatorKey,
-      title: 'Baggage Management',
+      title: 'Bag_view',
       theme: appTheme(),
       home: (session.isLoading && !session.hasValue)
           ? const _Splash()

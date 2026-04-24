@@ -37,7 +37,14 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
 
     return Scaffold(
       appBar: AppBar(
-        title: Text(operatorName.isEmpty ? 'Baggage Management' : 'Hi, $operatorName'),
+        leading: Padding(
+          padding: const EdgeInsets.all(8),
+          child: Image.asset(
+            'assets/bag_view_logo.png',
+            fit: BoxFit.contain,
+          ),
+        ),
+        title: Text(operatorName.isEmpty ? 'Bag_view' : 'Hi, $operatorName'),
         actions: [
           IconButton(
             tooltip: 'Profile',
