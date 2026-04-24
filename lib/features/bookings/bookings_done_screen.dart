@@ -4,12 +4,98 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../data/local/app_db.dart';
 import '../../app/theme.dart';
 
-class BookingsDoneScreen extends ConsumerWidget {
+class BookingsDoneScreen extends ConsumerStatefulWidget {
   const BookingsDoneScreen({super.key});
 
-  Future<void> _refresh(WidgetRef ref) async {
+  @override
+  ConsumerState<BookingsDoneScreen> createState() => _BookingsDoneScreenState();
+}
+
+class _BookingsDoneScreenState extends ConsumerState<BookingsDoneScreen>
+    with AutomaticKeepAliveClientMixin {
+  final ScrollController _scrollController = ScrollController();
+  final TextEditingController _searchController = TextEditingController();
+  String _query = '';
+
+  static const _scrollKey = PageStorageKey<String>('recordsScroll');
+
+  @override
+  bool get wantKeepAlive => true;
+
+  @override
+  void dispose() {
+    _scrollController.dispose();
+    _searchController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _refresh() async {
     // Local-first: refresh just re-builds from Drift streams.
     await Future<void>.value();
+  }
+
+  bool _matches(Booking b) {
+    final q = _query.trim().toLowerCase();
+    if (q.isEmpty) return true;
+    return b.rackId.toLowerCase().contains(q) ||
+        b.candidateId.toLowerCase().contains(q);
+  }
+
+  Widget _searchBar(BuildContext context) {
+    return TextField(
+      controller: _searchController,
+      textInputAction: TextInputAction.search,
+      decoration: InputDecoration(
+        hintText: 'Search by Rack ID or Roll No.',
+        prefixIcon: const Icon(Icons.search),
+        suffixIcon: _query.trim().isEmpty
+            ? null
+            : IconButton(
+                tooltip: 'Clear',
+                onPressed: () {
+                  _searchController.clear();
+                  setState(() => _query = '');
+                },
+                icon: const Icon(Icons.clear),
+              ),
+      ),
+      onChanged: (v) => setState(() => _query = v),
+    );
+  }
+
+  Widget _bookingCard({
+    required Booking b,
+    required Icon leading,
+    required String subtitle,
+    required Key key,
+  }) {
+    return Card(
+      key: key,
+      child: ListTile(
+        leading: leading,
+        title: Text('Roll: ${b.candidateId}'),
+        subtitle: Text(subtitle),
+      ),
+    );
+  }
+
+  SliverList _bookingSliver({
+    required List<Booking> bookings,
+    required String keyPrefix,
+    required Widget Function(Booking b) buildCard,
+  }) {
+    return SliverList(
+      delegate: SliverChildBuilderDelegate(
+        (context, idx) {
+          final b = bookings[idx];
+          return Padding(
+            padding: const EdgeInsets.only(bottom: 8),
+            child: buildCard(b),
+          );
+        },
+        childCount: bookings.length,
+      ),
+    );
   }
 
   // Future<void> _confirmDeleteBooking(
@@ -48,114 +134,163 @@ class BookingsDoneScreen extends ConsumerWidget {
   // }
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  Widget build(BuildContext context) {
+    super.build(context);
     final db = ref.watch(appDbProvider);
 
     return RefreshIndicator(
-      onRefresh: () => _refresh(ref),
-      child: ListView(
-        padding: const EdgeInsets.all(16),
-        children: [
-          Text('Records', style: Theme.of(context).textTheme.titleLarge),
-          const SizedBox(height: 12),
+      onRefresh: _refresh,
+      child: CustomScrollView(
+        key: _scrollKey,
+        controller: _scrollController,
+        slivers: [
+          SliverPadding(
+            padding: const EdgeInsets.all(16),
+            sliver: SliverList(
+              delegate: SliverChildListDelegate.fixed(
+                [
+                  Text('Records', style: Theme.of(context).textTheme.titleLarge),
+                  const SizedBox(height: 12),
+                  _searchBar(context),
+                  const SizedBox(height: 16),
+                ],
+              ),
+            ),
+          ),
 
-          Text('Deposited', style: Theme.of(context).textTheme.titleMedium),
-          const SizedBox(height: 8),
+          SliverPadding(
+            padding: const EdgeInsets.symmetric(horizontal: 16),
+            sliver: SliverToBoxAdapter(
+              child: Text(
+                'Deposited',
+                style: Theme.of(context).textTheme.titleMedium,
+              ),
+            ),
+          ),
+          const SliverPadding(
+            padding: EdgeInsets.only(left: 16, right: 16, top: 8),
+            sliver: SliverToBoxAdapter(child: SizedBox.shrink()),
+          ),
           StreamBuilder<List<Booking>>(
             stream: db.watchBookings(status: 'active'),
             builder: (context, snap) {
-              final bookings = snap.data ?? const <Booking>[];
+              final all = snap.data ?? const <Booking>[];
+              final bookings = all.where(_matches).toList(growable: false);
               if (bookings.isEmpty) {
-                return const Padding(
-                  padding: EdgeInsets.only(top: 16, bottom: 24),
-                  child: Text('No deposited bags.'),
+                return SliverPadding(
+                  padding: const EdgeInsets.fromLTRB(16, 16, 16, 24),
+                  sliver: SliverToBoxAdapter(
+                    child: Text(
+                      _query.trim().isEmpty
+                          ? 'No deposited bags.'
+                          : 'No matches in Deposited.',
+                    ),
+                  ),
                 );
               }
-
-              return Column(
-                children: [
-                  for (final b in bookings) ...[
-                    Card(
-                      child: ListTile(
-                        leading: const Icon(Icons.inventory_2_outlined),
-                        title: Text('Roll: ${b.candidateId}'),
-                        subtitle: Text('Rack: ${b.rackId}'),
-                      ),
-                    ),
-                    const SizedBox(height: 8),
-                  ],
-                ],
+              return SliverPadding(
+                padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
+                sliver: _bookingSliver(
+                  bookings: bookings,
+                  keyPrefix: 'active',
+                  buildCard: (b) => _bookingCard(
+                    key: ValueKey('active-${b.id}'),
+                    b: b,
+                    leading: const Icon(Icons.inventory_2_outlined),
+                    subtitle: 'Rack: ${b.rackId}',
+                  ),
+                ),
               );
             },
           ),
 
-          const SizedBox(height: 8),
-          Text('Retrieved', style: Theme.of(context).textTheme.titleMedium),
-          const SizedBox(height: 8),
+          SliverPadding(
+            padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
+            sliver: SliverToBoxAdapter(
+              child: Text(
+                'Retrieved',
+                style: Theme.of(context).textTheme.titleMedium,
+              ),
+            ),
+          ),
           StreamBuilder<List<Booking>>(
             stream: db.watchBookingsByStatuses(const ['complete']),
             builder: (context, snap) {
-              final bookings = snap.data ?? const <Booking>[];
+              final all = snap.data ?? const <Booking>[];
+              final bookings = all.where(_matches).toList(growable: false);
               if (bookings.isEmpty) {
-                return const Padding(
-                  padding: EdgeInsets.only(top: 16),
-                  child: Text('No retrieved records yet.'),
+                return SliverPadding(
+                  padding: const EdgeInsets.fromLTRB(16, 16, 16, 0),
+                  sliver: SliverToBoxAdapter(
+                    child: Text(
+                      _query.trim().isEmpty
+                          ? 'No retrieved records yet.'
+                          : 'No matches in Retrieved.',
+                    ),
+                  ),
                 );
               }
-
-              return Column(
-                children: [
-                  for (final b in bookings) ...[
-                    Card(
-                      child: ListTile(
-                        leading: const Icon(
-                          Icons.check_circle,
-                          color: AppPalette.success,
-                        ),
-                        title: Text('Roll: ${b.candidateId}'),
-                        subtitle: Text(
-                          'Rack: ${b.rackId} • Retrieved'
-                          '${b.endedAt == null ? '' : ' • ${b.endedAt!.toLocal()}'}',
-                        ),
-                      ),
+              return SliverPadding(
+                padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
+                sliver: _bookingSliver(
+                  bookings: bookings,
+                  keyPrefix: 'complete',
+                  buildCard: (b) => _bookingCard(
+                    key: ValueKey('complete-${b.id}'),
+                    b: b,
+                    leading: const Icon(
+                      Icons.check_circle,
+                      color: AppPalette.success,
                     ),
-                    const SizedBox(height: 8),
-                  ],
-                ],
+                    subtitle:
+                        'Rack: ${b.rackId} • Retrieved${b.endedAt == null ? '' : ' • ${b.endedAt!.toLocal()}'}',
+                  ),
+                ),
               );
             },
           ),
 
-          const SizedBox(height: 16),
-          Text('Flagged', style: Theme.of(context).textTheme.titleMedium),
-          const SizedBox(height: 8),
+          SliverPadding(
+            padding: const EdgeInsets.fromLTRB(16, 16, 16, 0),
+            sliver: SliverToBoxAdapter(
+              child: Text(
+                'Flagged',
+                style: Theme.of(context).textTheme.titleMedium,
+              ),
+            ),
+          ),
           StreamBuilder<List<Booking>>(
             stream: db.watchBookingsByStatuses(const ['flagged']),
             builder: (context, snap) {
-              final bookings = snap.data ?? const <Booking>[];
+              final all = snap.data ?? const <Booking>[];
+              final bookings = all.where(_matches).toList(growable: false);
               if (bookings.isEmpty) {
-                return const Padding(
-                  padding: EdgeInsets.only(top: 16),
-                  child: Text('No flagged bookings.'),
+                return SliverPadding(
+                  padding: const EdgeInsets.fromLTRB(16, 16, 16, 0),
+                  sliver: SliverToBoxAdapter(
+                    child: Text(
+                      _query.trim().isEmpty
+                          ? 'No flagged bookings.'
+                          : 'No matches in Flagged.',
+                    ),
+                  ),
                 );
               }
-
-              return Column(
-                children: [
-                  for (final b in bookings) ...[
-                    Card(
-                      child: ListTile(
-                        leading: const Icon(
-                          Icons.flag_outlined,
-                          color: AppPalette.amber,
-                        ),
-                        title: Text('Roll: ${b.candidateId}'),
-                        subtitle: Text('Rack: ${b.rackId} • Flagged'),
-                      ),
+              return SliverPadding(
+                padding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
+                sliver: _bookingSliver(
+                  bookings: bookings,
+                  keyPrefix: 'flagged',
+                  buildCard: (b) => _bookingCard(
+                    key: ValueKey('flagged-${b.id}'),
+                    b: b,
+                    leading: const Icon(
+                      Icons.flag_outlined,
+                      color: AppPalette.amber,
                     ),
-                    const SizedBox(height: 8),
-                  ],
-                ],
+                    subtitle: 'Rack: ${b.rackId} • Flagged',
+                  ),
+                ),
               );
             },
           ),

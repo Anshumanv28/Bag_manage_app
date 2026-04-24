@@ -13,6 +13,7 @@ import '../app/config.dart';
 import '../app/time_format.dart';
 import '../app/alerts.dart';
 import '../app/nav.dart';
+import '../app/storage_recovery.dart';
 import '../data/local/app_db.dart';
 import '../data/remote/auth_api.dart';
 import '../data/remote/sync_api.dart';
@@ -115,7 +116,16 @@ class SyncService {
   }
 
   Future<String> _deviceId() async {
-    final existing = await _storage.read(key: _deviceIdKey);
+    String? existing;
+    try {
+      existing = await _storage.read(key: _deviceIdKey);
+    } catch (e) {
+      if (isBadDecrypt(e)) {
+        await wipeAllLocalState(_ref);
+      } else {
+        rethrow;
+      }
+    }
     if (existing != null && existing.isNotEmpty) return existing;
     final generated = DateTime.now().microsecondsSinceEpoch.toString();
     await _storage.write(key: _deviceIdKey, value: generated);
@@ -123,7 +133,16 @@ class SyncService {
   }
 
   Future<DateTime?> lastPullAt() async {
-    final raw = await _storage.read(key: _lastPullAtKey);
+    String? raw;
+    try {
+      raw = await _storage.read(key: _lastPullAtKey);
+    } catch (e) {
+      if (isBadDecrypt(e)) {
+        await wipeAllLocalState(_ref);
+        return null;
+      }
+      rethrow;
+    }
     if (raw == null || raw.isEmpty) return null;
     return DateTime.tryParse(raw);
   }

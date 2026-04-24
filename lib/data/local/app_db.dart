@@ -176,6 +176,13 @@ class AppDb extends _$AppDb {
     return row != null;
   }
 
+  Future<void> wipeAll() async {
+    await transaction(() async {
+      await delete(bookings).go();
+      await delete(scanEvents).go();
+    });
+  }
+
   Future<void> deleteBookingCascade(String bookingId) async {
     await transaction(() async {
       await deleteBooking(bookingId);

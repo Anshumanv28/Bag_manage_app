@@ -1,5 +1,6 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../app/storage_recovery.dart';
 import '../../data/remote/auth_api.dart';
 import '../../data/remote/tokens.dart';
 import '../../shared/models/operator.dart';
@@ -16,7 +17,17 @@ class AuthController extends AsyncNotifier<AuthSession?> {
   @override
   Future<AuthSession?> build() async {
     final tokenStore = ref.read(tokenStoreProvider);
-    final tokens = await tokenStore.read();
+    Tokens? tokens;
+    try {
+      tokens = await tokenStore.read();
+    } catch (e) {
+      if (isBadDecrypt(e)) {
+        await wipeAllLocalState(ref);
+        ref.read(tokensProvider.notifier).clear();
+        return null;
+      }
+      rethrow;
+    }
     if (tokens == null) return null;
 
     ref.read(tokensProvider.notifier).setTokens(tokens);
